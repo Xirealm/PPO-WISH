@@ -9,8 +9,11 @@ from datetime import datetime
 
 # Constants
 IMAGE_SIZE = 560
-DATASET = 'ISIC' 
+DATASET = 'ISIC'
+# DATASET = 'FSS-1000' 
 CATAGORY = '100'
+# CATAGORY = 'vineSnake'
+# CATAGORY = 'bandedGecko'
 BASE_DIR = os.path.dirname(__file__)
 
 # Directory settings
