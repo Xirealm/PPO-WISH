@@ -21,8 +21,6 @@ RESULTS_DIR = os.path.join(BASE_DIR, 'results', DATASET, CATAGORY,'masks')
 GROUND_TRUTH_DIR = os.path.join(BASE_DIR, 'dataset', DATASET, CATAGORY, 'target_masks')
 time = datetime.now().strftime("%Y%m%d_%H%M")
 OUTPUT_DIR = os.path.join(BASE_DIR, 'evaluation', DATASET, CATAGORY, time)
-
-# Ensure output directory exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def dice_coefficient(y_true, y_pred):
@@ -49,13 +47,6 @@ def dice_coefficient(y_true, y_pred):
     return dice
 
 def evaluate_segmentation(results_dir=RESULTS_DIR, ground_truth_dir=GROUND_TRUTH_DIR, output_dir=OUTPUT_DIR):
-    """
-    Evaluate segmentation results    
-    Args:
-        results_dir: Directory containing segmentation results
-        ground_truth_dir: Directory containing ground truth masks
-        output_file: Output file path for results       
-    """
     result_files = sorted(glob(os.path.join(results_dir, "*.jpg")))
     
     if not result_files:
