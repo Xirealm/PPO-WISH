@@ -22,8 +22,13 @@ from utils import generate_points, GraphOptimizationEnv, QLearningAgent, calcula
 warnings.filterwarnings("ignore")
 
 SIZE = 560
-DATASET = 'ISIC'
-CATAGORY = '100'
+# DATASET = 'FSS-1000' 
+# DATASET = 'ISIC'
+DATASET = 'Kvasir'
+CATAGORY = '10'
+# CATAGORY = '100'
+# CATAGORY = 'vineSnake'
+# CATAGORY = 'bandedGecko'
 
 # Set device (GPU if available, otherwise CPU)
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -89,6 +94,7 @@ def process_single_image(agent, model_dino, model_seg, image_name, reference, ma
                 agent, pos_indices, neg_indices, features, max_steps=100, device=DEVICE, image_size=IMAGE_SIZE
             )
             end_time = time.time()
+            print(f"len(opt_pos_indices): {len(opt_pos_indices)}, len(opt_neg_indices): {len(opt_neg_indices)}")
             print(f"Time to optimize prompts: {end_time - start_time:.4f} seconds")
 
             # Generate points and perform segmentation

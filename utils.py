@@ -476,8 +476,7 @@ class QLearningAgent:
             # 检查正/负索引是否为空，空则跳过
             if positive_indices.numel() == 0 or negative_indices.numel() == 0:
                 continue
-            
-            print(features[1])
+    
             print(f"Positive indices: {positive_indices.shape}, Negative indices: {negative_indices.shape}")
 
             # 计算特征距离（正正&正负）和物理距离（正正&负负&正负）

@@ -9,14 +9,16 @@ from datetime import datetime
 
 # Constants
 IMAGE_SIZE = 560
-DATASET = 'ISIC'
 # DATASET = 'FSS-1000' 
-CATAGORY = '100'
+# DATASET = 'ISIC'
+DATASET = 'Kvasir'
+CATAGORY = '10'
+# CATAGORY = '100'
 # CATAGORY = 'vineSnake'
 # CATAGORY = 'bandedGecko'
-BASE_DIR = os.path.dirname(__file__)
 
 # Directory settings
+BASE_DIR = os.path.dirname(__file__)
 RESULTS_DIR = os.path.join(BASE_DIR, 'results', DATASET, CATAGORY,'masks')  
 GROUND_TRUTH_DIR = os.path.join(BASE_DIR, 'dataset', DATASET, CATAGORY, 'target_masks')
 time = datetime.now().strftime("%Y%m%d_%H%M")
@@ -77,7 +79,7 @@ def evaluate_segmentation(results_dir=RESULTS_DIR, ground_truth_dir=GROUND_TRUTH
         result_img = cv2.resize(result_img, (IMAGE_SIZE,IMAGE_SIZE))
         gt_img = cv2.resize(gt_img, (IMAGE_SIZE,IMAGE_SIZE))
         
-        # Binarize images (if not already binary)
+        # Binarize images
         if np.max(result_img) > 1:
             result_img = (result_img > 127).astype(np.uint8)
         if np.max(gt_img) > 1:
