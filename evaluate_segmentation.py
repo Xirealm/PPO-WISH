@@ -10,9 +10,9 @@ from datetime import datetime
 # Constants
 IMAGE_SIZE = 560
 # DATASET = 'FSS-1000' 
-# DATASET = 'ISIC'
-DATASET = 'Kvasir'
-CATAGORY = '10'
+DATASET = 'ISIC'
+# DATASET = 'Kvasir'
+CATAGORY = '100'
 # CATAGORY = '100'
 # CATAGORY = 'vineSnake'
 # CATAGORY = 'bandedGecko'

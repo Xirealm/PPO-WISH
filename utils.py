@@ -186,9 +186,28 @@ class GraphOptimizationEnv:
             self.add_node(node)
 
         reward = self.calculate_reward(operation)
-        self.steps += 1
+        if self.min_nodes < len(self.pos_nodes) < self.max_nodes and self.min_nodes < len(self.neg_nodes) < self.max_nodes:
+            if reward < 0:
+                print("奖励值下降了,撤回step")
+                self.revertStep(action)
+                reward = 0
+            elif reward > 0:
+                print("奖励值上升了")
+                self.steps += 1
         done = self.is_done()
+        print(reward)
         return self.get_state(), reward, done
+    
+    def revertStep(self, action):
+        node, operation = action
+        if operation == "remove_pos":
+            self.restore_node(node, "pos")
+        elif operation == "remove_neg":
+            self.restore_node(node, "neg")
+        elif operation == "restore_pos":
+            self.remove_node(node, "pos")
+        elif operation == "restore_neg":
+            self.remove_node(node, "neg")
 
     def remove_node(self, node, category):
         """Remove a node from the graph."""
@@ -506,6 +525,7 @@ class QLearningAgent:
             state = self.env.reset()
             done = False
             total_reward = 0
+            # previous_total_reward = 0
 
             # 根据最佳奖励动态调整epsilon
             normalized_reward = (self.best_reward - 0) / (5 - 0)
@@ -526,6 +546,18 @@ class QLearningAgent:
                 self.replay()
                 state = next_state
                 total_reward += reward
+                
+                # if self.env.min_nodes < len(self.env.pos_nodes) < self.env.max_nodes and self.env.min_nodes < len(self.env.neg_nodes) < self.env.max_nodes:
+                #     if previous_total_reward > total_reward:
+                #         print("奖励值下降了,撤回step")
+                #         next_state, done = self.env.revertStep(action)
+                #         state = next_state
+                #         total_reward -= reward
+                #     elif previous_total_reward < total_reward:
+                #         print("奖励值上升了")
+                #     print(f"total_reward:{total_reward}")
+                
+                # previous_total_reward = total_reward
                 self.update_epsilon()
                 # 输出节点统计信息
                 # pos_count = len(self.env.pos_nodes)
