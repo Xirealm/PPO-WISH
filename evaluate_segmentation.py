@@ -6,14 +6,15 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import pandas as pd
 from datetime import datetime
+from medpy.metric.binary import dc, hd95
 
 # Constants
 IMAGE_SIZE = 560
 # DATASET = 'FSS-1000' 
 DATASET = 'ISIC'
 # DATASET = 'Kvasir'
+# CATAGORY = '10'
 CATAGORY = '100'
-# CATAGORY = '100'
 # CATAGORY = 'vineSnake'
 # CATAGORY = 'bandedGecko'
 
@@ -26,27 +27,14 @@ OUTPUT_DIR = os.path.join(BASE_DIR, 'evaluation', DATASET, CATAGORY, time)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def dice_coefficient(y_true, y_pred):
-    """
-    Calculate Dice Similarity Coefficient (DSC)
-    
-    Args:
-    y_true: Ground truth binary mask
-    y_pred: Predicted binary mask
-    
-    Returns:
-    dice: Dice Similarity Coefficient
-    """
-    # Ensure inputs are binary masks
     y_true = y_true.astype(np.bool_)
     y_pred = y_pred.astype(np.bool_)
-    
-    # Calculate intersection
-    intersection = np.logical_and(y_true, y_pred)
-    
-    # Calculate DSC
-    dice = (2.0 * intersection.sum()) / (y_true.sum() + y_pred.sum() + 1e-7)
-    
-    return dice
+    return dc(y_pred, y_true)
+
+def hausdorff_distance(y_true, y_pred):
+    y_true = y_true.astype(np.bool_)
+    y_pred = y_pred.astype(np.bool_)
+    return hd95(y_pred, y_true)
 
 def evaluate_segmentation(results_dir=RESULTS_DIR, ground_truth_dir=GROUND_TRUTH_DIR, output_dir=OUTPUT_DIR):
     result_files = sorted(glob(os.path.join(results_dir, "*.jpg")))
@@ -84,37 +72,57 @@ def evaluate_segmentation(results_dir=RESULTS_DIR, ground_truth_dir=GROUND_TRUTH
             result_img = (result_img > 127).astype(np.uint8)
         if np.max(gt_img) > 1:
             gt_img = (gt_img > 127).astype(np.uint8)
-        
-        # Calculate DSC
+            
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        result_img = cv2.morphologyEx(result_img, cv2.MORPH_OPEN, kernel)
+        gt_img = cv2.morphologyEx(gt_img, cv2.MORPH_OPEN, kernel)
+
+        # Calculate metrics
         dice = dice_coefficient(gt_img, result_img)
+        hd_value = hausdorff_distance(gt_img, result_img)
         
         # Store results
         results.append({
             'filename': filename,
-            'dice': dice
+            'dice': dice,
+            'hd': hd_value
         })
     
     # Create DataFrame
     results_df = pd.DataFrame(results)
     
-    # Calculate mean DSC
+    # Calculate statistics
     mean_dice = results_df['dice'].mean()
     std_dice = results_df['dice'].std()
+    mean_hd = results_df['hd'].mean()
+    std_hd = results_df['hd'].std()
     
     print(f"Evaluation completed!")
     print(f"Mean DSC: {mean_dice:.4f} ± {std_dice:.4f}")
-    print(f"Min DSC: {results_df['dice'].min():.4f}")
-    print(f"Max DSC: {results_df['dice'].max():.4f}")
+    print(f"Mean HD: {mean_hd:.4f} ± {std_hd:.4f}")
     
-    # Plot DSC distribution histogram
-    plt.figure(figsize=(10, 6))
-    plt.hist(results_df['dice'], bins=20, alpha=0.7, color='blue')
-    plt.axvline(mean_dice, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_dice:.4f}')
-    plt.title('DSC Distribution')
-    plt.xlabel('DSC Value')
-    plt.ylabel('Frequency')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+    # Create subplots for DSC and HD
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot DSC distribution
+    ax1.hist(results_df['dice'], bins=20, alpha=0.7, color='blue')
+    ax1.axvline(mean_dice, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_dice:.4f}')
+    ax1.set_title('DSC Distribution')
+    ax1.set_xlabel('DSC Value')
+    ax1.set_ylabel('Frequency')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot HD distribution
+    ax2.hist(results_df['hd'], bins=20, alpha=0.7, color='green')
+    ax2.axvline(mean_hd, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_hd:.4f}')
+    ax2.set_title('HD Distribution')
+    ax2.set_xlabel('HD Value')
+    ax2.set_ylabel('Frequency')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
     
     # Save results
     if output_dir:
@@ -126,9 +134,12 @@ def evaluate_segmentation(results_dir=RESULTS_DIR, ground_truth_dir=GROUND_TRUTH
         results_df.to_csv(os.path.join(output_dir, results_filename), index=False)
         
         with open(os.path.join(output_dir, summary_filename), 'w') as f:
-            f.write(f"Mean DSC: {mean_dice:.4f} +- {std_dice:.4f}\n")
+            f.write(f"Mean DSC: {mean_dice:.4f} ± {std_dice:.4f}\n")
+            f.write(f"Mean HD: {mean_hd:.4f} ± {std_hd:.4f}\n")
             f.write(f"Min DSC: {results_df['dice'].min():.4f}\n")
             f.write(f"Max DSC: {results_df['dice'].max():.4f}\n")
+            f.write(f"Min HD: {results_df['hd'].min():.4f}\n")
+            f.write(f"Max HD: {results_df['hd'].max():.4f}\n")
     
     plt.show()
 
