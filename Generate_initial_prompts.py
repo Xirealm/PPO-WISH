@@ -49,9 +49,37 @@ def save_tensor_to_txt(tensor, filename):
     np.savetxt(filename, array, fmt='%d')
     print(f"Tensor saved to {filename}")
 
+def calculate_bounding_box(points, patch_size=14, image_size=560):
+    """
+    计算包围所有点的边界框，并进行适当扩展
+    
+    Parameters:
+    points (list): 点的列表，每个点是[x, y]格式
+    patch_size (int): 特征patch的大小
+    image_size (int): 图像的大小
+    
+    Returns:
+    tuple: (min_x, min_y, max_x, max_y)
+    """
+    if not points:
+        return None
+    
+    points = np.array(points)
+    min_x, min_y = np.min(points, axis=0)
+    max_x, max_y = np.max(points, axis=0)
+    
+    # 扩展边界框，扩展1.5倍patch大小
+    padding = int(patch_size * 1.5)
+    min_x = max(0, min_x - padding)
+    min_y = max(0, min_y - padding)
+    max_x = min(image_size, max_x + padding)
+    max_y = min(image_size, max_y + padding)
+    
+    return min_x, min_y, max_x, max_y
+
 def main():
     # Hyperparameter setting
-    dataset_name = os.path.join('ISIC','100')
+    dataset_name = os.path.join('ISIC','10')
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     image_size = 560 # Must be a multiple of 14
 
@@ -63,10 +91,10 @@ def main():
     mask_path = os.path.join('dataset', dataset_name, 'reference_masks')
     image_dir = os.path.join('dataset', dataset_name, 'target_images')
     save_dir = os.path.join('results', dataset_name, 'initial_prompts')
-    points_image_dir = os.path.join('results', dataset_name, 'initial_points_images')
+    initial_image_dir = os.path.join('results', dataset_name, 'initial_images')
 
     os.makedirs(save_dir, exist_ok=True)
-    os.makedirs(points_image_dir, exist_ok=True)
+    os.makedirs(initial_image_dir, exist_ok=True)
 
     # Get the reference image for prompting
     reference_list = os.listdir(image_prompt_dir)
@@ -92,7 +120,12 @@ def main():
             initial_indices_pos = torch.unique(initial_indices_pos).to(device)
             initial_indices_neg = torch.unique(initial_indices_neg).to(device)
             print(len(initial_indices_pos), len(initial_indices_neg))
-            
+            # Remove intersections
+            intersection = set(initial_indices_pos.tolist()).intersection(set(initial_indices_neg.tolist()))
+            if intersection:
+                initial_indices_pos = torch.tensor([x for x in initial_indices_pos.cpu().tolist() if x not in intersection]).cuda()
+                initial_indices_neg = torch.tensor([x for x in initial_indices_neg.cpu().tolist() if x not in intersection]).cuda()
+            print(len(initial_indices_pos), len(initial_indices_neg))
             torch.save(features, os.path.join(save_dir, name + '_features.pt'))
             torch.save(initial_indices_pos, os.path.join(save_dir, name + '_initial_indices_pos.pt'))
             torch.save(initial_indices_neg, os.path.join(save_dir, name + '_initial_indices_neg.pt'))
@@ -109,11 +142,33 @@ def main():
                 np.zeros(len(initial_indices_neg))
             ])
             show_points(coords, labels, plt.gca())
+            
+            # 计算并保存边界框
+            bbox = calculate_bounding_box(pos_points)
+            if bbox is not None:
+                min_x, min_y, max_x, max_y = bbox
+                # 保存边界框坐标
+                bbox_data = {
+                    'min_x': min_x,
+                    'min_y': min_y,
+                    'max_x': max_x,
+                    'max_y': max_y
+                }
+                torch.save(bbox_data, os.path.join(save_dir, name + '_bbox.pt'))
+                
+                # 绘制边界框
+                rect = plt.Rectangle((min_x, min_y), 
+                                  max_x - min_x, 
+                                  max_y - min_y,
+                                  fill=False,
+                                  edgecolor='#f08c00',
+                                  linewidth=2.5)
+                plt.gca().add_patch(rect)
+            
             # Remove axes and save figure
             plt.axis('off')
-            plt.savefig(os.path.join(points_image_dir, f'{name}_points.png'), bbox_inches='tight', pad_inches=0)
-            plt.close()
-            
+            plt.savefig(os.path.join(initial_image_dir, f'{name}_initial.png'), bbox_inches='tight', pad_inches=0)
+            plt.close()           
             # feature_pos_distances, feature_cross_distances, physical_pos_distances, physical_cross_distances = distance_calculate(features, initial_indices_pos, initial_indices_neg, image_size)
         else:
             print(f"No positive or negative indices found for {name}")

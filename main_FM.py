@@ -117,7 +117,7 @@ if __name__ == "__main__":
     # Initialize Q-learning agent
     env = GraphOptimizationEnv
     agent = QLearningAgent(env)
-    # agent.q_table = torch.load(Q_TABLE_PATH,weights_only=False)
+    agent.q_table = torch.load(Q_TABLE_PATH,weights_only=False)
 
     # Get reference image list
     reference_list = os.listdir(REFERENCE_IMAGE_DIR)
