@@ -211,9 +211,6 @@ def save_best_model(agent, output_path, filename):
 
 def main():
     """Main function to train the Q-learning agent."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    image_size = SIZE
-
     # 设置初始提示数据目录路径
     base_dir = os.path.join(BASE_DIR, 'results', DATASET, CATAGORY, 'initial_prompts')
     # 获取目录下所有文件

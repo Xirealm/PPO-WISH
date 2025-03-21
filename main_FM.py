@@ -23,7 +23,6 @@ from utils import generate_points, GraphOptimizationEnv, QLearningAgent, calcula
 # Ignore all warnings
 warnings.filterwarnings("ignore")
 
-SIZE = 560
 # DATASET = 'FSS-1000' 
 DATASET = 'ISIC'
 # DATASET = 'Kvasir'
@@ -32,9 +31,8 @@ CATAGORY = '10'
 # CATAGORY = 'vineSnake'
 # CATAGORY = 'bandedGecko'
 
-# Set device (GPU if available, otherwise CPU)
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-IMAGE_SIZE = SIZE
+IMAGE_SIZE = 560
 
 # Define paths
 BASE_DIR = os.path.dirname(__file__)
@@ -88,6 +86,14 @@ def process_single_image(agent, model_dino, model_seg, image_name, reference, ma
         image_inner = [reference_image, image]
         start_time = time.time()
         features, pos_indices, neg_indices = generate(gt_mask, image_inner, DEVICE, model_dino, IMAGE_SIZE)
+        # unique indices
+        pos_indices = torch.unique(pos_indices).to(DEVICE)
+        neg_indices = torch.unique(neg_indices).to(DEVICE)
+        # Remove intersections
+        intersection = set(pos_indices.tolist()).intersection(set(neg_indices.tolist()))
+        if intersection:
+            pos_indices = torch.tensor([x for x in pos_indices.cpu().tolist() if x not in intersection]).cuda()
+            neg_indices = torch.tensor([x for x in neg_indices.cpu().tolist() if x not in intersection]).cuda()
         end_time = time.time()
         print(f"Time to generate initial prompts: {end_time - start_time:.4f} seconds")
 

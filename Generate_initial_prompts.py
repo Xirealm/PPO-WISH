@@ -117,7 +117,7 @@ def main():
 
         if len(initial_indices_pos) != 0 and len(initial_indices_neg) != 0:
             print(len(initial_indices_pos), len(initial_indices_neg))
-             # 确保索引唯一
+            # 确保索引唯一
             initial_indices_pos = torch.unique(initial_indices_pos).to(device)
             initial_indices_neg = torch.unique(initial_indices_neg).to(device)
             print(len(initial_indices_pos), len(initial_indices_neg))
