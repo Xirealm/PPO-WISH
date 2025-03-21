@@ -10,6 +10,7 @@ from collections import defaultdict, deque
 import time
 from datetime import timedelta
 from config import *
+import json  # 添加到文件开头的 imports 中
 
 def calculate_center_points(indices, size):
     """Calculate the center points based on indices for a given size."""
@@ -327,21 +328,21 @@ class QLearningAgent:
         self.gamma = gamma
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
-        self.epsilon_decay = epsilon_decay  # 添加 epsilon_decay 参数
+        self.epsilon_decay = epsilon_decay
         self.epsilon = epsilon_start
         self.q_table = defaultdict(float)
         self.best_pos = 100
-        self.best_cross = 0  # Initialize to inf because we aim to minimize the final evaluation metric
+        self.best_cross = 0
         self.best_q_table = None
         self.memory = deque(maxlen=memory_size)
-        self.best_memory = deque(maxlen=memory_size)  # 存储最佳经验的memory
+        self.best_memory = deque(maxlen=memory_size)
         self.batch_size = batch_size
-        self.reward_threshold = reward_threshold  # 添加reward_threshold属性
-        self.last_reward = None  # 添加last_reward属性用于存储上一轮奖励
-        self.best_reward = -float('inf')  # Initialize best reward
-        self.best_reward_save = -float('inf')  # Initialize best reward
-        self.best_pos_feature_distance = float('inf')  # Initialize best pos feature distance
-        self.best_cross_feature_distance = float('inf')  # Initialize best pos feature distance
+        self.reward_threshold = reward_threshold
+        self.last_reward = None
+        self.best_reward = -float('inf')
+        self.best_reward_save = -float('inf')
+        self.best_pos_feature_distance = float('inf')
+        self.best_cross_feature_distance = float('inf')
 
     def update_epsilon(self):
         """Update the epsilon value based on a decay factor."""
@@ -359,7 +360,6 @@ class QLearningAgent:
             max_q = max(q_values.values())
             action = random.choice([action for action, q in q_values.items() if q == max_q])
 
-        # print(self.epsilon, action)
         return action
 
     def get_possible_actions(self, state):
@@ -449,213 +449,6 @@ class QLearningAgent:
         batch = random.sample(self.best_memory, self.batch_size)
         for state, action, reward, next_state in batch:
             self.update_q_table(state, action, reward, next_state)
-
-    def train(self, episodes, output_path, base_dir, file_prefixes, max_steps):
-        """训练Q-learning智能体
-        Args:
-            episodes: 训练回合数
-            output_path: 输出路径
-            base_dir: 训练数据目录 
-            file_prefixes: 文件前缀列表
-            max_steps: 每回合最大步数
-        Returns:
-            rewards: 每回合的奖励列表
-        """
-        rewards = []
-        image_size = IMAGE_SIZE
-        device = DEVICE  
-        os.makedirs(output_path, exist_ok=True)  # 创建输出目录
-        start_time = time.time()  # 记录开始时间
-        # 训练循环
-        for episode in range(episodes):
-            # 随机选择一个文件前缀
-            selected_prefix = random.choice(list(file_prefixes))
-            print(f"Episode {episode + 1}/{episodes}, Selected file prefix: {selected_prefix}")
-            
-            # 构建特征文件和正负索引文件的完整路径
-            feature_file = os.path.join(base_dir, f"{selected_prefix}_features.pt")
-            pos_file = os.path.join(base_dir, f"{selected_prefix}_initial_indices_pos.pt")
-            neg_file = os.path.join(base_dir, f"{selected_prefix}_initial_indices_neg.pt")
-            
-            # 检查所需文件是否存在
-            if not (os.path.exists(feature_file) and os.path.exists(pos_file) and os.path.exists(neg_file)):
-                print(f"Required files not found for prefix {selected_prefix}, skipping this episode.")
-                continue
-            
-            # 加载特征和正负索引数据
-            features = torch.load(feature_file,weights_only=True).to(device)
-            positive_indices = torch.load(pos_file, weights_only=True).to(device)
-            negative_indices = torch.load(neg_file, weights_only=True).to(device)
-            
-            # 确保索引唯一
-            positive_indices = torch.unique(positive_indices).to(device)
-            negative_indices = torch.unique(negative_indices).to(device)
-            
-            # 移除正负索引的交集
-            set1 = set(positive_indices.tolist())
-            set2 = set(negative_indices.tolist())
-            intersection = set1.intersection(set2)
-            if intersection:
-                positive_indices = torch.tensor([x for x in positive_indices.cpu().tolist() if x not in intersection]).cuda()
-                negative_indices = torch.tensor([x for x in negative_indices.cpu().tolist() if x not in intersection]).cuda()
-                
-            # 检查正/负索引是否为空，空则跳过
-            if positive_indices.numel() == 0 or negative_indices.numel() == 0:
-                continue
-    
-            print(f"Positive indices: {positive_indices.shape}, Negative indices: {negative_indices.shape}")
-
-            # 计算特征距离（正正&正负）和物理距离（正正&负负&正负）
-            feature_pos_distances, feature_cross_distances, physical_pos_distances, physical_neg_distances, physical_cross_distances = calculate_distances(features, positive_indices, negative_indices, image_size, device)
-
-            # 转换为边的表示形式
-            feature_pos_edge = convert_to_edges(positive_indices, positive_indices, feature_pos_distances)
-            physical_pos_edge = convert_to_edges(positive_indices, positive_indices, physical_pos_distances)
-            physical_neg_edge = convert_to_edges(negative_indices, negative_indices, physical_neg_distances)
-            feature_cross_edge = convert_to_edges(positive_indices, negative_indices, feature_cross_distances)
-            physical_cross_edge = convert_to_edges(positive_indices, negative_indices, physical_cross_distances)
-
-            # 创建图结构
-            G = nx.MultiGraph()
-            G.add_nodes_from(positive_indices.cpu().numpy(), category='pos')
-            G.add_nodes_from(negative_indices.cpu().numpy(), category='neg')
-
-            # 添加带权重的边
-            G.add_weighted_edges_from(feature_pos_edge, weight='feature_pos')
-            G.add_weighted_edges_from(physical_pos_edge, weight='physical_pos')
-            G.add_weighted_edges_from(physical_neg_edge, weight='physical_neg')
-            G.add_weighted_edges_from(feature_cross_edge, weight='feature_cross')
-            G.add_weighted_edges_from(physical_cross_edge, weight='physical_cross')
-
-            bbox_data = {
-                'min_x': 100,
-                'min_y': 100,
-                'max_x': 200,
-                'max_y': 200
-            }
-
-            # 获取列表格式的结果
-            (inside_indices, outside_indices,
-            inside_pos_indices, outside_pos_indices,
-            inside_neg_indices, outside_neg_indices) = get_box_node_indices(G, bbox_data)
-            
-            print(inside_pos_indices, outside_pos_indices)
-
-            # 初始化环境并开始训练
-            self.env = GraphOptimizationEnv(G, max_steps)
-            
-            state = self.env.reset()
-            done = False
-            total_reward = 0
-            # previous_total_reward = 0
-
-            # 根据最佳奖励动态调整epsilon
-            normalized_reward = (self.best_reward - 0) / (5 - 0)
-            if self.best_reward < 0:
-                self.epsilon=self.epsilon_start
-            elif self.best_reward >= 5: # 感觉这个值可以调整
-                self.epsilon=self.epsilon_end
-            else:
-                self.epsilon = 1 - normalized_reward
-            print(f"best_reward:{self.best_reward},epsilon:{self.epsilon}")
-
-            # 训练循环
-            while not done:
-                action = self.get_action(state)
-                next_state, reward, done = self.env.step(action)
-                self.memory.append((state, action, reward, next_state))
-                self.update_q_table(state, action, reward, next_state)
-                self.replay()
-                state = next_state
-                total_reward += reward
-                
-                # if self.env.min_nodes < len(self.env.pos_nodes) < self.env.max_nodes and self.env.min_nodes < len(self.env.neg_nodes) < self.env.max_nodes:
-                #     if previous_total_reward > total_reward:
-                #         print("奖励值下降了,撤回step")
-                #         next_state, done = self.env.revertStep(action)
-                #         state = next_state
-                #         total_reward -= reward
-                #     elif previous_total_reward < total_reward:
-                #         print("奖励值上升了")
-                #     print(f"total_reward:{total_reward}")
-                
-                # previous_total_reward = total_reward
-                self.update_epsilon()
-                # 输出节点统计信息
-                # pos_count = len(self.env.pos_nodes)
-                # neg_count = len(self.env.neg_nodes)
-                # print(f"positive nodes count: {pos_count}, negative nodes count: {neg_count}")
-
-            # 如果当前回合表现更好，更新最佳记录
-            print(total_reward,self.best_reward)
-            if total_reward > self.best_reward:
-                self.best_reward = total_reward
-                self.best_memory = deque(self.memory, maxlen=self.memory.maxlen)
-                self.replay_best()
-
-            # 保存训练结果
-            rewards.append(total_reward)
-            self.save_results(episode, total_reward, output_path, selected_prefix)
-            self.last_reward = total_reward
-
-            # 计算最终评估指标
-            mean_feature_pos = np.mean(list(nx.get_edge_attributes(self.env.G, 'feature_pos').values()))
-            mean_feature_cross = np.mean(list(nx.get_edge_attributes(self.env.G, 'feature_cross').values()))
-            print(f"Episode {episode + 1}/{episodes}, Reward: {total_reward}, Final pos: {mean_feature_pos}, Final cross: {mean_feature_cross}")
-
-            # 计算并显示时间信息
-            elapsed_time = time.time() - start_time
-            estimated_total_time = elapsed_time * (episodes / (episode + 1))
-            remaining_time = estimated_total_time - elapsed_time
-            print(f"Elapsed Time: {timedelta(seconds=int(elapsed_time))}, Estimated Total Time: {timedelta(seconds=int(estimated_total_time))}, Remaining Time: {timedelta(seconds=int(remaining_time))}")
-
-            # 更新并保存最佳模型
-            if mean_feature_pos < self.best_pos and mean_feature_cross > self.best_cross:
-                print('Update!')
-                self.best_pos = mean_feature_pos
-                self.best_cross = mean_feature_cross
-                self.best_q_table = self.q_table.copy()
-                self.save_best_q_table(output_path)
-
-            # 保存不同指标下的最佳模型
-            if total_reward > self.best_reward_save:
-                self.best_reward_save = total_reward
-                self.save_best_model(output_path, 'best_reward_model.pkl')
-
-            if mean_feature_pos < self.best_pos_feature_distance:
-                self.best_pos_feature_distance = mean_feature_pos
-                self.save_best_model(output_path, 'best_pos_feature_distance_model.pkl')
-
-            if mean_feature_cross > self.best_cross_feature_distance:
-                self.best_cross_feature_distance = mean_feature_cross
-                self.save_best_model(output_path, 'best_cross_feature_distance_model.pkl')
-
-            # 输出最终节点统计信息
-            final_pos_count = len(self.env.pos_nodes)
-            final_neg_count = len(self.env.neg_nodes)
-            print(f"Episode {episode + 1}: Final positive nodes count: {final_pos_count}, Final negative nodes count: {final_neg_count}")
-
-        return rewards
-
-    def save_results(self, episode, reward, output_path, prefix):
-        """Save the results of an episode in txt."""
-        G_state = self.env.get_state()
-        pos_nodes = [node for node, data in G_state.nodes(data=True) if data['category'] == 'pos']
-        neg_nodes = [node for node, data in G_state.nodes(data=True) if data['category'] == 'neg']
-
-        with open(f"{output_path}/{prefix}_rewards.txt", "a") as f:
-            f.write(f"Episode {episode}: Reward: {reward}\n")
-
-    def save_best_q_table(self, output_path):
-        """Save the best Q-table."""
-        with open(f"{output_path}/best_q_table.pkl", "wb") as f:
-            torch.save(self.best_q_table, f)
-
-    def save_best_model(self, output_path, filename):
-        """Save the best model based on the highest reward."""
-        with open(f"{output_path}/{filename}", "wb") as f:
-            torch.save(self.q_table, f)
-        print(f"Best model saved with reward: {self.best_reward}")
 
 def show_mask(mask,ax, random_color=False):
 

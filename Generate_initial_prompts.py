@@ -7,6 +7,7 @@ from PIL import Image
 import cv2
 import warnings
 import matplotlib.pyplot as plt
+import json
 from utils import calculate_center_points
 from config import *
 
@@ -147,14 +148,15 @@ def main():
             bbox = calculate_bounding_box(pos_points)
             if bbox is not None:
                 min_x, min_y, max_x, max_y = bbox
-                # 保存边界框坐标
+                # 保存边界框坐标为JSON格式
                 bbox_data = {
-                    'min_x': min_x,
-                    'min_y': min_y,
-                    'max_x': max_x,
-                    'max_y': max_y
+                    'min_x': int(min_x),
+                    'min_y': int(min_y),
+                    'max_x': int(max_x),
+                    'max_y': int(max_y)
                 }
-                torch.save(bbox_data, os.path.join(save_dir, name + '_bbox.pt'))
+                with open(os.path.join(save_dir, name + '_bbox.json'), 'w') as f:
+                    json.dump(bbox_data, f)
                 
                 # 绘制边界框
                 rect = plt.Rectangle((min_x, min_y), 
