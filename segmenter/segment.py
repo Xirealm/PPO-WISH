@@ -59,15 +59,27 @@ def refine_mask(mask):
     cv2.drawContours(contour_mask, filtered_contours, -1, 255, -1)
     return contour_mask
 
-def process_image(image, ps_points, ng_points, sam, max_contour=False):
+def process_image(image, ps_points, ng_points, sam, max_contour=False, input_box=None):
     """Process a single image to generate a mask."""
     image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     predictor = SamPredictor(sam)
     predictor.set_image(image)
     input_point, input_label = prepare_input(ps_points, ng_points)
-    #print(input_point)
-    #print(input_label)
-    masks, _, _ = predictor.predict(point_coords=input_point, point_labels=input_label, multimask_output=False)
+    
+    if input_box is not None:
+        masks, _, _ = predictor.predict(
+            point_coords=input_point,
+            point_labels=input_label,
+            box=input_box[None, :],
+            multimask_output=False
+        )
+    else:
+        masks, _, _ = predictor.predict(
+            point_coords=input_point,
+            point_labels=input_label,
+            multimask_output=False
+        )
+        
     mask_image = (masks[0] * 255).astype(np.uint8)
     if max_contour:
         mask_image = save_max_contour_area(mask_image)
@@ -88,7 +100,7 @@ def loading_seg(model_type, device):
     sam.to(device=device)
     return sam
 
-def seg_main(image, pos_prompt, neg_prompt, device, sam_model, max_contour=False):
+def seg_main(image, pos_prompt, neg_prompt, device, sam_model, max_contour=False, input_box=None):
     """Main segmentation function."""
-    mask = process_image(image, pos_prompt, neg_prompt, sam_model, max_contour)
+    mask = process_image(image, pos_prompt, neg_prompt, sam_model, max_contour, input_box)
     return mask

@@ -5,6 +5,8 @@ import warnings
 import torch
 from tqdm import tqdm
 from PIL import Image
+import numpy as np
+import matplotlib.pyplot as plt
 
 # Set paths for feature matching and segmentation modules
 generate_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'feature_matching'))
@@ -13,10 +15,10 @@ sys.path.append(segment_path)
 sys.path.append(generate_path)
 
 # from segment_anything import sam_model_registry, SamPredictor
-from segmenter.segment import process_image, loading_seg, seg_main
+from segmenter.segment import process_image, loading_seg, seg_main, show_points
 from feature_matching.generate_points import generate, loading_dino, distance_calculate
 from test_GPOA import test_agent, optimize_nodes
-from utils import generate_points, GraphOptimizationEnv, QLearningAgent, calculate_distances, convert_to_edges
+from utils import generate_points, GraphOptimizationEnv, QLearningAgent, calculate_distances, convert_to_edges, calculate_bounding_box, calculate_center_points,refine_mask
 
 # Ignore all warnings
 warnings.filterwarnings("ignore")
@@ -43,9 +45,11 @@ Q_TABLE_PATH = os.path.join(BASE_DIR, 'model', 'best_q_table.pkl')
 IMAGE_DIR = os.path.join(DATA_DIR, 'target_images')  # Path for test images
 RESULTS_DIR = os.path.join(BASE_DIR, 'results', DATASET, CATAGORY)
 SAVE_DIR = os.path.join(RESULTS_DIR, 'masks')
+FINAL_PROMPTS_DIR = os.path.join(RESULTS_DIR, 'final_prompts_image')  # 新增保存最终提示的目录
 
-# Ensure the results directory exists
+# Ensure the results directories exist
 os.makedirs(SAVE_DIR, exist_ok=True)
+os.makedirs(FINAL_PROMPTS_DIR, exist_ok=True)  # 创建新目录
 
 # Load models for segmentation and feature generation
 def load_models():
@@ -88,6 +92,18 @@ def process_single_image(agent, model_dino, model_seg, image_name, reference, ma
         print(f"Time to generate initial prompts: {end_time - start_time:.4f} seconds")
 
         if len(pos_indices) != 0 and len(neg_indices) != 0:
+            # Generate bounding box for positive points
+            pos_points = calculate_center_points(pos_indices, IMAGE_SIZE)
+            bbox = calculate_bounding_box(pos_points, patch_size=14, image_size=IMAGE_SIZE)
+            
+            if bbox is not None:
+                min_x, min_y, max_x, max_y = bbox
+                print(f"Generated bounding box: ({min_x}, {min_y}, {max_x}, {max_y})")
+                input_box = np.array([min_x, min_y, max_x, max_y])
+            else:
+                print("No valid bounding box generated")
+                input_box = None
+
             # Optimize prompts using Q-learning
             start_time = time.time()
             opt_pos_indices, opt_neg_indices = optimize_nodes(
@@ -99,11 +115,49 @@ def process_single_image(agent, model_dino, model_seg, image_name, reference, ma
 
             # Generate points and perform segmentation
             pos_points, neg_points = generate_points(opt_pos_indices, opt_neg_indices, IMAGE_SIZE)
-            mask = seg_main(image, pos_points, neg_points, DEVICE, model_seg)
+            
+            # Add box prompt to segmentation
+            if input_box is not None:
+                mask = seg_main(image, pos_points, neg_points, DEVICE, model_seg, input_box=input_box)
+            else:
+                mask = seg_main(image, pos_points, neg_points, DEVICE, model_seg)
 
-            # Save the resulting segmentation mask
-            mask = Image.fromarray(mask)
+            # Refine the mask before saving
+            refined_mask = refine_mask(mask,threshold=0.5)
+            mask = Image.fromarray(refined_mask)
             mask.save(os.path.join(SAVE_DIR, f"{image_name}"))
+
+            # 保存最终提示点和边界框的可视化图像
+            plt.figure(figsize=(10, 10))
+            plt.imshow(image)
+            
+            # 准备点和标签用于可视化
+            coords = np.array(pos_points + neg_points)
+            labels = np.concatenate([
+                np.ones(len(pos_points)),
+                np.zeros(len(neg_points))
+            ])
+            
+            # 显示点
+            show_points(coords, labels, plt.gca())
+            
+            # 如果有边界框，则绘制边界框
+            if input_box is not None:
+                rect = plt.Rectangle((input_box[0], input_box[1]),
+                                   input_box[2] - input_box[0],
+                                   input_box[3] - input_box[1],
+                                   fill=False,
+                                   edgecolor='#f08c00',
+                                   linewidth=2.5)
+                plt.gca().add_patch(rect)
+            
+            # 移除坐标轴并保存图像
+            plt.axis('off')
+            plt.savefig(os.path.join(FINAL_PROMPTS_DIR, f'{image_name}_final.png'), 
+                       bbox_inches='tight', 
+                       pad_inches=0)
+            plt.close()
+
         else:
             print(f"Skipping {image_name}: No positive or negative indices found.")
     except Exception as e:

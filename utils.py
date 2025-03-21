@@ -33,6 +33,34 @@ def calculate_center_points(indices, size):
 
     return center_points
 
+def calculate_bounding_box(points, patch_size=14, image_size=560):
+    """
+    计算包围所有点的边界框，并进行适当扩展
+    
+    Parameters:
+    points (list): 点的列表，每个点是[x, y]格式
+    patch_size (int): 特征patch的大小
+    image_size (int): 图像的大小
+    
+    Returns:
+    tuple: (min_x, min_y, max_x, max_y)
+    """
+    if not points:
+        return None
+    
+    points = np.array(points)
+    min_x, min_y = np.min(points, axis=0)
+    max_x, max_y = np.max(points, axis=0)
+    
+    # 扩展边界框，扩展1.5倍patch大小
+    padding = int(patch_size * 1.5)
+    min_x = max(0, min_x - padding)
+    min_y = max(0, min_y - padding)
+    max_x = min(image_size, max_x + padding)
+    max_y = min(image_size, max_y + padding)
+    
+    return min_x, min_y, max_x, max_y
+
 def map_to_original_size(resized_coordinates, original_size, image_size):
     """Map resized coordinates back to the original image size."""
     original_height, original_width = original_size
