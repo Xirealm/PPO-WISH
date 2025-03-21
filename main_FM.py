@@ -26,7 +26,7 @@ SIZE = 560
 DATASET = 'ISIC'
 # DATASET = 'Kvasir'
 # CATAGORY = '10'
-CATAGORY = '100'
+CATAGORY = '10'
 # CATAGORY = 'vineSnake'
 # CATAGORY = 'bandedGecko'
 

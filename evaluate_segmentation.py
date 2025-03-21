@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from datetime import datetime
 from medpy.metric.binary import dc, hd95
+from utils import refine_mask
 
 # Constants
 IMAGE_SIZE = 560
@@ -14,7 +15,7 @@ IMAGE_SIZE = 560
 DATASET = 'ISIC'
 # DATASET = 'Kvasir'
 # CATAGORY = '10'
-CATAGORY = '100'
+CATAGORY = '10'
 # CATAGORY = 'vineSnake'
 # CATAGORY = 'bandedGecko'
 
@@ -73,9 +74,9 @@ def evaluate_segmentation(results_dir=RESULTS_DIR, ground_truth_dir=GROUND_TRUTH
         if np.max(gt_img) > 1:
             gt_img = (gt_img > 127).astype(np.uint8)
             
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        result_img = cv2.morphologyEx(result_img, cv2.MORPH_OPEN, kernel)
-        gt_img = cv2.morphologyEx(gt_img, cv2.MORPH_OPEN, kernel)
+        # 使用refine_mask优化掩码，添加threshold参数
+        result_img = refine_mask(result_img, threshold=0.5)
+        gt_img = refine_mask(gt_img, threshold=0.5)
 
         # Calculate metrics
         dice = dice_coefficient(gt_img, result_img)

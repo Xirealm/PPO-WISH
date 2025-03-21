@@ -14,7 +14,14 @@ from config import *
 def calculate_center_points(indices, size):
     """Calculate the center points based on indices for a given size."""
     center_points = []
-    indices = indices.cpu().numpy()
+    
+    # Convert indices to numpy array depending on input type
+    if hasattr(indices, 'cpu'):  # Check if indices is a torch tensor
+        indices = indices.cpu().numpy()
+    elif isinstance(indices, list):
+        indices = np.array(indices)
+    else:
+        indices = np.asarray(indices)
 
     for index in indices:
         row = index // (size // 14)
@@ -50,7 +57,7 @@ def normalize_distances(distances):
     return normalized_distances
 
 
-def refine_mask(mask,threashold):
+def refine_mask(mask,threshold):
 
     # Find contours in the mask image
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -62,7 +69,7 @@ def refine_mask(mask,threashold):
     largest_contour = contours[0]
 
     # Calculate the minimum contour area that is 20% of the size of the largest contour
-    min_area = threashold * cv2.contourArea(largest_contour)
+    min_area = threshold * cv2.contourArea(largest_contour)
 
     # Find contours that are at least 20% of the size of the largest contour
     filtered_contours = [contour for contour in contours if cv2.contourArea(contour) >= min_area]
@@ -520,8 +527,23 @@ class QLearningAgent:
             G.add_weighted_edges_from(feature_cross_edge, weight='feature_cross')
             G.add_weighted_edges_from(physical_cross_edge, weight='physical_cross')
 
+            bbox_data = {
+                'min_x': 100,
+                'min_y': 100,
+                'max_x': 200,
+                'max_y': 200
+            }
+
+            # 获取列表格式的结果
+            (inside_indices, outside_indices,
+            inside_pos_indices, outside_pos_indices,
+            inside_neg_indices, outside_neg_indices) = get_box_node_indices(G, bbox_data)
+            
+            print(inside_pos_indices, outside_pos_indices)
+
             # 初始化环境并开始训练
             self.env = GraphOptimizationEnv(G, max_steps)
+            
             state = self.env.reset()
             done = False
             total_reward = 0
@@ -674,3 +696,60 @@ def calculate_block_index(center_points, size, block_size=14):
         index = row * (size // block_size) + col
         indices.append(index)
     return indices
+
+def is_point_in_box(point, bbox):
+    """
+    判断点是否在边界框内
+    
+    Args:
+        point (list): [x, y] 格式的点坐标
+        bbox (dict): 包含 min_x, min_y, max_x, max_y 的边界框信息
+    
+    Returns:
+        bool: 点是否在边界框内
+    """
+    x, y = point
+    return (bbox['min_x'] <= x <= bbox['max_x'] and 
+            bbox['min_y'] <= y <= bbox['max_y'])
+
+def get_box_node_indices(G, bbox):
+    """
+    获取在边界框内和外的节点索引
+    
+    Args:
+        G (networkx.Graph): 图结构
+        bbox (dict): 包含 min_x, min_y, max_x, max_y 的边界框信息
+    
+    Returns:
+        tuple: (inside_indices, outside_indices, 
+                inside_pos_indices, outside_pos_indices,
+                inside_neg_indices, outside_neg_indices)
+    """
+    inside_indices = []
+    outside_indices = []
+    inside_pos_indices = []
+    outside_pos_indices = []
+    inside_neg_indices = []
+    outside_neg_indices = []
+    
+    for node in G.nodes():
+        # 计算节点的中心点坐标
+        point = calculate_center_points([node], 560)[0]
+        
+        # 判断点是否在边界框内
+        if is_point_in_box(point, bbox):
+            inside_indices.append(node)
+            if G.nodes[node]['category'] == 'pos':
+                inside_pos_indices.append(node)
+            else:
+                inside_neg_indices.append(node)
+        else:
+            outside_indices.append(node)
+            if G.nodes[node]['category'] == 'pos':
+                outside_pos_indices.append(node)
+            else:
+                outside_neg_indices.append(node)
+    
+    return (inside_indices, outside_indices,
+            inside_pos_indices, outside_pos_indices,
+            inside_neg_indices, outside_neg_indices)

@@ -14,7 +14,7 @@ from utils import GraphOptimizationEnv, QLearningAgent
 # Constants
 SIZE = 560
 DATASET = 'ISIC'
-CATAGORY = '100'
+CATAGORY = '10'
 BASE_DIR = os.path.dirname(__file__)
 
 def main():
@@ -37,7 +37,7 @@ def main():
     current_time = datetime.now().strftime("%Y%m%d_%H%M") # 当前时间
     output_path = os.path.join(os.path.dirname(__file__), 'train', current_time) # 输出目录
     # 训练智能体
-    rewards = agent.train(episodes=300, output_path=output_path, base_dir=base_dir, file_prefixes=file_prefixes, max_steps=max_steps)
+    rewards = agent.train(episodes=30, output_path=output_path, base_dir=base_dir, file_prefixes=file_prefixes, max_steps=max_steps)
      # 绘制训练奖励曲线
     import matplotlib.pyplot as plt
     plt.plot(rewards)
