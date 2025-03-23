@@ -292,14 +292,14 @@ class NodeOptimizationEnv:
         reward = 0
 
         if mean_feature_pos < self.previous_feature_pos_mean:
-            reward += 5 * (self.previous_feature_pos_mean - mean_feature_pos)
+            reward += 2 * (self.previous_feature_pos_mean - mean_feature_pos)
         else:
-            reward -= 5 * (mean_feature_pos - self.previous_feature_pos_mean)
+            reward -= 2 * (mean_feature_pos - self.previous_feature_pos_mean)
 
         if mean_feature_cross > self.previous_feature_cross_mean:
-            reward += 5 * (mean_feature_cross - self.previous_feature_cross_mean)
+            reward += 2 * (mean_feature_cross - self.previous_feature_cross_mean)
         else:
-            reward -= 5 * (self.previous_feature_cross_mean - mean_feature_cross)
+            reward -= 2 * (self.previous_feature_cross_mean - mean_feature_cross)
 
         if mean_physical_pos > self.previous_physical_pos_mean:
             reward += (mean_physical_pos - self.previous_physical_pos_mean)
@@ -785,7 +785,7 @@ class BoxOptimizationEnv:
             feature_diff_norm = normalize_distance(inout_feature_distance, self.previous_feature_distance)
 
             # 框内特征与gt距离减小时给予奖励
-            reward += 5 * inside_distance_norm
+            reward += 2 * inside_distance_norm
 
             # 框外特征与gt距离增大时给予奖励
             reward += 2 * outside_distance_norm
