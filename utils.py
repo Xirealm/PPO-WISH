@@ -292,17 +292,17 @@ class NodeOptimizationEnv:
         reward = 0
 
         if mean_feature_pos < self.previous_feature_pos_mean:
-            reward += 2 * (self.previous_feature_pos_mean - mean_feature_pos)
+            reward += 3 * (self.previous_feature_pos_mean - mean_feature_pos)
         else:
-            reward -= 2 * (mean_feature_pos - self.previous_feature_pos_mean)
+            reward -= 3 * (mean_feature_pos - self.previous_feature_pos_mean)
 
         if mean_feature_cross > self.previous_feature_cross_mean:
-            reward += 2 * (mean_feature_cross - self.previous_feature_cross_mean)
+            reward += 3 * (mean_feature_cross - self.previous_feature_cross_mean)
         else:
-            reward -= 2 * (self.previous_feature_cross_mean - mean_feature_cross)
+            reward -= 3 * (self.previous_feature_cross_mean - mean_feature_cross)
 
         if mean_physical_pos > self.previous_physical_pos_mean:
-            reward += (mean_physical_pos - self.previous_physical_pos_mean)
+            reward += 2 * (mean_physical_pos - self.previous_physical_pos_mean)
         else:
             reward -= (self.previous_physical_pos_mean - mean_physical_pos)
 
@@ -312,7 +312,7 @@ class NodeOptimizationEnv:
             reward -= (self.previous_physical_neg_mean - mean_physical_neg)
 
         if mean_physical_cross < self.previous_physical_cross_mean:
-            reward += (self.previous_physical_cross_mean - mean_physical_cross)
+            reward += 2 * (self.previous_physical_cross_mean - mean_physical_cross)
         else:
             reward -= (mean_physical_cross - self.previous_physical_cross_mean)
 
