@@ -745,14 +745,9 @@ class BoxOptimizationEnv:
             # print("box action reward < 0 , revert action")
             self.bbox = old_bbox
             self.update_node_indices()
-            reward = 0
+            reward = self.calculate_reward()
         else:
             self.steps += 1
-        
-        # 更新上一状态的指标
-        self.previous_pos_ratio_in_box = self.calculate_pos_ratio_in_box()
-        self.previous_neg_ratio_out_box = self.calculate_neg_ratio_out_box()
-        self.previous_inside_feature_distance, self.previous_outside_feature_distance, self.previous_feature_distance = self.calculate_feature_distances()
         
         done = self.is_done()
         return self.get_state(), reward, done
@@ -792,8 +787,10 @@ class BoxOptimizationEnv:
 
             # 框内外特征差异增大时给予奖励
             reward += 2 * feature_diff_norm
-
-            # 更新上一次的特征距离
+            
+            # 更新上一状态的指标
+            self.previous_pos_ratio_in_box = self.calculate_pos_ratio_in_box()
+            self.previous_neg_ratio_out_box = self.calculate_neg_ratio_out_box()
             self.previous_inside_feature_distance = inside_gt_distance
             self.previous_outside_feature_distance = outside_gt_distance
             self.previous_feature_distance = inout_feature_distance
