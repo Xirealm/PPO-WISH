@@ -292,29 +292,29 @@ class NodeOptimizationEnv:
         reward = 0
 
         if mean_feature_pos < self.previous_feature_pos_mean:
-            reward += 3 * (self.previous_feature_pos_mean - mean_feature_pos)
+            reward += 2 * (self.previous_feature_pos_mean - mean_feature_pos)
         else:
-            reward -= 3 * (mean_feature_pos - self.previous_feature_pos_mean)
+            reward -= 2 * (mean_feature_pos - self.previous_feature_pos_mean)
 
         if mean_feature_cross > self.previous_feature_cross_mean:
-            reward += 3 * (mean_feature_cross - self.previous_feature_cross_mean)
+            reward += 2 * (mean_feature_cross - self.previous_feature_cross_mean)
         else:
-            reward -= 3 * (self.previous_feature_cross_mean - mean_feature_cross)
+            reward -= 2 * (self.previous_feature_cross_mean - mean_feature_cross)
 
         if mean_physical_pos > self.previous_physical_pos_mean:
             reward += 2 * (mean_physical_pos - self.previous_physical_pos_mean)
         else:
-            reward -= (self.previous_physical_pos_mean - mean_physical_pos)
+            reward -= 2 *(self.previous_physical_pos_mean - mean_physical_pos)
 
         if mean_physical_neg > self.previous_physical_neg_mean:
-            reward += (mean_physical_neg - self.previous_physical_neg_mean)
+            reward += 1 * (mean_physical_neg - self.previous_physical_neg_mean)
         else:
-            reward -= (self.previous_physical_neg_mean - mean_physical_neg)
+            reward -= 1 *(self.previous_physical_neg_mean - mean_physical_neg)
 
         if mean_physical_cross < self.previous_physical_cross_mean:
-            reward += 2 * (self.previous_physical_cross_mean - mean_physical_cross)
+            reward += 1 * (self.previous_physical_cross_mean - mean_physical_cross)
         else:
-            reward -= (mean_physical_cross - self.previous_physical_cross_mean)
+            reward -= 1 * (mean_physical_cross - self.previous_physical_cross_mean)
 
         if operation == "add":
             # reward -= 10  # Add penalty for add operation
@@ -763,7 +763,7 @@ class BoxOptimizationEnv:
         
         # 正样本框内比例奖励
         pos_ratio_diff = current_pos_ratio_in_box - self.previous_pos_ratio_in_box
-        reward += 5 * max(min(pos_ratio_diff, 1), -1)
+        reward += 2 * max(min(pos_ratio_diff, 1), -1)
 
         # 负样本框外比例奖励
         neg_ratio_diff = current_neg_ratio_out_box - self.previous_neg_ratio_out_box
@@ -780,13 +780,13 @@ class BoxOptimizationEnv:
             feature_diff_norm = normalize_distance(inout_feature_distance, self.previous_feature_distance)
 
             # 框内特征与gt距离减小时给予奖励
-            reward += 3 * inside_distance_norm
+            reward += 2 * inside_distance_norm
 
             # 框外特征与gt距离增大时给予奖励
             reward += 1 * outside_distance_norm
 
             # 框内外特征差异增大时给予奖励
-            reward += 1 * feature_diff_norm
+            reward += 2 * feature_diff_norm
             
             # 更新上一状态的指标
             self.previous_pos_ratio_in_box = self.calculate_pos_ratio_in_box()
