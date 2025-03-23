@@ -715,23 +715,23 @@ class BoxOptimizationEnv:
             self.bbox['min_x'] = min(self.image_size - self.step_size, self.bbox['min_x'] + self.step_size)
             self.bbox['max_x'] = min(self.image_size, self.bbox['max_x'] + self.step_size)
         elif action == "increase_width":
-            # 增加宽度，左右两边各扩展step_size/2
-            self.bbox['min_x'] = max(0, self.bbox['min_x'] - self.step_size/2)
-            self.bbox['max_x'] = min(self.image_size, self.bbox['max_x'] + self.step_size/2)
+            # 增加宽度，左右两边各扩展step_size
+            self.bbox['min_x'] = max(0, self.bbox['min_x'] - self.step_size)
+            self.bbox['max_x'] = min(self.image_size, self.bbox['max_x'] + self.step_size)
         elif action == "decrease_width":
             # 确保边界框宽度不小于step_size
             if self.bbox['max_x'] - self.bbox['min_x'] > self.step_size*2:
-                self.bbox['min_x'] += self.step_size/2
-                self.bbox['max_x'] -= self.step_size/2
+                self.bbox['min_x'] += self.step_size
+                self.bbox['max_x'] -= self.step_size
         elif action == "increase_height":
-            # 增加高度，上下两边各扩展step_size/2
-            self.bbox['min_y'] = max(0, self.bbox['min_y'] - self.step_size/2)
-            self.bbox['max_y'] = min(self.image_size, self.bbox['max_y'] + self.step_size/2)
+            # 增加高度，上下两边各扩展step_size
+            self.bbox['min_y'] = max(0, self.bbox['min_y'] - self.step_size)
+            self.bbox['max_y'] = min(self.image_size, self.bbox['max_y'] + self.step_size)
         elif action == "decrease_height":
             # 确保边界框高度不小于step_size
             if self.bbox['max_y'] - self.bbox['min_y'] > self.step_size*2:
-                self.bbox['min_y'] += self.step_size/2
-                self.bbox['max_y'] -= self.step_size/2
+                self.bbox['min_y'] += self.step_size
+                self.bbox['max_y'] -= self.step_size
         
         print(self.bbox)
         # 更新节点索引
