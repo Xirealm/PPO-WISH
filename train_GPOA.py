@@ -128,7 +128,7 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         if node_agent.best_reward < 0:
             node_agent.epsilon = node_agent.epsilon_start
             box_agent.epsilon = box_agent.epsilon_start
-        elif node_agent.best_reward >= 5:
+        elif node_agent.best_reward >= 10:
             node_agent.epsilon = node_agent.epsilon_end
             box_agent.epsilon = box_agent.epsilon_end
         else:
@@ -187,11 +187,10 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         mean_feature_cross = np.mean(list(nx.get_edge_attributes(multi_env.node_env.G, 'feature_cross').values()))
         pos_ratio_in_box = multi_env.box_env.calculate_pos_ratio_in_box()
         neg_ratio_out_box = multi_env.box_env.calculate_neg_ratio_out_box()
-        feature_distance = multi_env.box_env.calculate_feature_distance()
         
         print(f"Episode {episode + 1}/{episodes}, Reward: {total_reward}")
         print(f"Node metrics - Final pos: {mean_feature_pos}, Final cross: {mean_feature_cross}")
-        print(f"Box metrics - Pos ratio in box: {pos_ratio_in_box}, Neg ratio out box: {neg_ratio_out_box}, Feature distance: {feature_distance}")
+        print(f"Box metrics - Pos ratio in box: {pos_ratio_in_box}, Neg ratio out box: {neg_ratio_out_box}")
 
         # 计算并显示时间信息
         elapsed_time = time.time() - start_time

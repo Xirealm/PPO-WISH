@@ -369,6 +369,32 @@ class NodeAgent:
         """Update the epsilon value based on a decay factor."""
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
+    def _get_state_hash(self, state):
+        """将图状态转换为哈希值
+        
+        Args:
+            state: 图状态
+            
+        Returns:
+            状态的哈希值
+        """
+        # 提取图的关键特征作为状态
+        pos_nodes = sorted([n for n, d in state.nodes(data=True) if d['category'] == 'pos'])
+        neg_nodes = sorted([n for n, d in state.nodes(data=True) if d['category'] == 'neg'])
+        
+        # 计算特征距离的平均值
+        feature_pos = np.mean(list(nx.get_edge_attributes(state, 'feature_pos').values())) if nx.get_edge_attributes(state, 'feature_pos') else 0
+        feature_cross = np.mean(list(nx.get_edge_attributes(state, 'feature_cross').values())) if nx.get_edge_attributes(state, 'feature_cross') else 0
+        
+        # 组合状态特征
+        state_tuple = (
+            tuple(pos_nodes),
+            tuple(neg_nodes),
+            round(feature_pos, 4),
+            round(feature_cross, 4)
+        )
+        return hash(state_tuple)
+
     def get_action(self, state):
         """Select an action based on epsilon-greedy policy."""
         actions = self.get_possible_actions(state)
@@ -376,8 +402,9 @@ class NodeAgent:
         if random.random() < self.epsilon:
             action = random.choice(actions)
         else:
-            # Select the action with the highest Q-value
-            q_values = {action: self.q_table[(state, action)] for action in actions}
+            # 使用哈希后的状态查询Q值
+            state_hash = self._get_state_hash(state)
+            q_values = {action: self.q_table.get((state_hash, action), 0) for action in actions}
             max_q = max(q_values.values())
             action = random.choice([action for action, q in q_values.items() if q == max_q])
 
@@ -448,10 +475,15 @@ class NodeAgent:
 
     def update_q_table(self, state, action, reward, next_state):
         """Update the Q-table based on the current state, action, reward, and next state."""
+        state_hash = self._get_state_hash(state)
+        next_state_hash = self._get_state_hash(next_state)
+        
         max_next_q = max(
-            [self.q_table[(next_state, next_action)] for next_action in self.get_possible_actions(next_state)],
+            [self.q_table.get((next_state_hash, next_action), 0) for next_action in self.get_possible_actions(next_state)],
             default=0)
-        self.q_table[(state, action)] += self.alpha * (reward + self.gamma * max_next_q - self.q_table[(state, action)])
+        old_q = self.q_table.get((state_hash, action), 0)
+        new_q = old_q + self.alpha * (reward + self.gamma * max_next_q - old_q)
+        self.q_table[(state_hash, action)] = new_q
 
     def replay(self):
         """Replay experiences from memory to update Q-table."""
@@ -739,6 +771,7 @@ class BoxOptimizationEnv:
         
         # 计算奖励
         reward = self.calculate_reward()
+        print(reward)
         
         # 如果奖励为负，撤销操作
         if reward < 0:
@@ -867,10 +900,15 @@ class BoxAgent:
             状态的哈希值
         """
         _, bbox = state
-        # 使用边界框坐标作为状态特征
+        # 使用边界框坐标和比率信息作为状态特征
         bbox_tuple = (
             bbox['min_x'], bbox['min_y'], 
-            bbox['max_x'], bbox['max_y']
+            bbox['max_x'], bbox['max_y'],
+            round(self.env.previous_pos_ratio_in_box, 4),
+            round(self.env.previous_neg_ratio_out_box, 4),
+            round(self.env.previous_inside_feature_distance, 4),
+            round(self.env.previous_outside_feature_distance, 4),
+            round(self.env.previous_feature_distance, 4)
         )
         return hash(bbox_tuple)
     
