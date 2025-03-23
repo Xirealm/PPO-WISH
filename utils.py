@@ -780,13 +780,13 @@ class BoxOptimizationEnv:
             feature_diff_norm = normalize_distance(inout_feature_distance, self.previous_feature_distance)
 
             # 框内特征与gt距离减小时给予奖励
-            reward += 2 * inside_distance_norm
+            reward += 3 * inside_distance_norm
 
             # 框外特征与gt距离增大时给予奖励
-            reward += 2 * outside_distance_norm
+            reward += 1 * outside_distance_norm
 
             # 框内外特征差异增大时给予奖励
-            reward += 2 * feature_diff_norm
+            reward += 1 * feature_diff_norm
             
             # 更新上一状态的指标
             self.previous_pos_ratio_in_box = self.calculate_pos_ratio_in_box()
