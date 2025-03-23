@@ -7,3 +7,5 @@ train/*
 evaluation/*
 
 __pycache__/*
+
+__pycache__

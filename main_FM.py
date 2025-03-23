@@ -7,6 +7,7 @@ from tqdm import tqdm
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
+import networkx as nx
 
 # Set paths for feature matching and segmentation modules
 generate_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'feature_matching'))
@@ -18,7 +19,7 @@ sys.path.append(generate_path)
 from segmenter.segment import process_image, loading_seg, seg_main, show_points
 from feature_matching.generate_points import generate, loading_dino, distance_calculate
 from test_GPOA import test_agent, optimize_nodes
-from utils import generate_points, GraphOptimizationEnv, QLearningAgent, calculate_distances, convert_to_edges, calculate_bounding_box, calculate_center_points,refine_mask
+from utils import generate_points, NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, calculate_distances, convert_to_edges, calculate_bounding_box, calculate_center_points, refine_mask, get_box_node_indices, BoxOptimizationEnv
 
 # Ignore all warnings
 warnings.filterwarnings("ignore")
@@ -26,8 +27,8 @@ warnings.filterwarnings("ignore")
 # DATASET = 'FSS-1000' 
 DATASET = 'ISIC'
 # DATASET = 'Kvasir'
-# CATAGORY = '10'
 CATAGORY = '10'
+# CATAGORY = '100'
 # CATAGORY = 'vineSnake'
 # CATAGORY = 'bandedGecko'
 
@@ -62,13 +63,38 @@ def load_models():
         print(f"Error loading models: {e}")
         sys.exit(1)
 
-# Process a single image
-def process_single_image(agent, model_dino, model_seg, image_name, reference, mask_dir):
+# Load multi-agent system
+def load_agents():
     """
-    Process a single image for segmentation and optimization.
+    Load node and box agents.
+    """
+    try:
+        node_env = NodeOptimizationEnv
+        box_env = BoxOptimizationEnv
+        node_agent = NodeAgent(node_env)
+        box_agent = BoxAgent(box_env)
+        
+        # Load trained models
+        node_agent.q_table = torch.load(os.path.join(BASE_DIR, 'model', 'node_best_q_table.pkl'), weights_only=False)
+        box_agent.q_table = torch.load(os.path.join(BASE_DIR, 'model', 'box_best_q_table.pkl'), weights_only=False)
+        
+        return node_agent, box_agent
+    except Exception as e:
+        print(f"Error loading agents: {e}")
+        # Fallback to using only node agent
+        node_env = NodeOptimizationEnv
+        node_agent = NodeAgent(node_env)
+        node_agent.q_table = torch.load(Q_TABLE_PATH, weights_only=False)
+        return node_agent, None
+
+# Process a single image
+def process_single_image(node_agent, box_agent, model_dino, model_seg, image_name, reference, mask_dir):
+    """
+    Use multi-agent system to process a single image for segmentation and optimization.
 
     Parameters:
-    - agent: Q-learning agent for optimization
+    - node_agent: Node agent
+    - box_agent: Box agent
     - model_dino: DINO feature extraction model
     - model_seg: SAM model
     - image_name: Name of the image to process
@@ -100,21 +126,89 @@ def process_single_image(agent, model_dino, model_seg, image_name, reference, ma
         if len(pos_indices) != 0 and len(neg_indices) != 0:
             # Generate bounding box for positive points
             pos_points = calculate_center_points(pos_indices, IMAGE_SIZE)
-            bbox = calculate_bounding_box(pos_points, patch_size=14, image_size=IMAGE_SIZE)
+            initial_bbox = calculate_bounding_box(pos_points, patch_size=14, image_size=IMAGE_SIZE)
             
-            if bbox is not None:
-                min_x, min_y, max_x, max_y = bbox
+            if initial_bbox is not None:
+                min_x, min_y, max_x, max_y = initial_bbox
+                bbox_data = {'min_x': min_x, 'min_y': min_y, 'max_x': max_x, 'max_y': max_y}
                 print(f"Generated bounding box: ({min_x}, {min_y}, {max_x}, {max_y})")
                 input_box = np.array([min_x, min_y, max_x, max_y])
             else:
                 print("No valid bounding box generated")
-                input_box = None
+                center = IMAGE_SIZE // 2
+                size = IMAGE_SIZE // 4
+                bbox_data = {
+                    'min_x': center - size // 2,
+                    'min_y': center - size // 2,
+                    'max_x': center + size // 2,
+                    'max_y': center + size // 2
+                }
+                input_box = np.array([bbox_data['min_x'], bbox_data['min_y'], 
+                                      bbox_data['max_x'], bbox_data['max_y']])
 
-            # Optimize prompts using Q-learning
+            # Calculate feature distances and physical distances
+            feature_pos_distances, feature_cross_distances, physical_pos_distances, physical_neg_distances, physical_cross_distances = calculate_distances(
+                features, pos_indices, neg_indices, IMAGE_SIZE, DEVICE)
+
+            # Convert to edge representation
+            feature_pos_edge = convert_to_edges(pos_indices, pos_indices, feature_pos_distances)
+            physical_pos_edge = convert_to_edges(pos_indices, pos_indices, physical_pos_distances)
+            physical_neg_edge = convert_to_edges(neg_indices, neg_indices, physical_neg_distances)
+            feature_cross_edge = convert_to_edges(pos_indices, neg_indices, feature_cross_distances)
+            physical_cross_edge = convert_to_edges(pos_indices, neg_indices, physical_cross_distances)
+
+            # Create graph structure
+            G = nx.MultiGraph()
+            G.add_nodes_from(pos_indices.cpu().numpy(), category='pos')
+            G.add_nodes_from(neg_indices.cpu().numpy(), category='neg')
+
+            # Add weighted edges
+            G.add_weighted_edges_from(feature_pos_edge, weight='feature_pos')
+            G.add_weighted_edges_from(physical_pos_edge, weight='physical_pos')
+            G.add_weighted_edges_from(physical_neg_edge, weight='physical_neg')
+            G.add_weighted_edges_from(feature_cross_edge, weight='feature_cross')
+            G.add_weighted_edges_from(physical_cross_edge, weight='physical_cross')
+
+            # Use multi-agent system to optimize prompts
             start_time = time.time()
-            opt_pos_indices, opt_neg_indices = optimize_nodes(
-                agent, pos_indices, neg_indices, features, max_steps=100, device=DEVICE, image_size=IMAGE_SIZE
-            )
+            if box_agent is not None:
+                # Use multi-agent system
+                multi_env = MultiAgentEnv(G, bbox_data, IMAGE_SIZE, max_steps=100)
+                node_agent.env = multi_env.node_env
+                box_agent.env = multi_env.box_env
+                
+                # 设置特征信息
+                multi_env.box_env.features = features 
+                
+                state = multi_env.reset()
+                done = False
+                
+                # Alternate execution of node agent and box agent actions
+                step_count = 0
+                while not done:
+                    if step_count % 2 == 0:  # Even step executes node agent action
+                        node_action = node_agent.get_action(state["node"])
+                        action_dict = {"node": node_action}
+                    else:  # Odd step executes box agent action
+                        box_action = box_agent.get_action(state["box"])
+                        action_dict = {"box": box_action}
+                    
+                    next_state, _, done = multi_env.step(action_dict)
+                    state = next_state
+                    step_count += 1
+                
+                # Get optimized prompts and bounding box
+                opt_pos_indices = torch.tensor([node for node in multi_env.node_env.pos_nodes])
+                opt_neg_indices = torch.tensor([node for node in multi_env.node_env.neg_nodes])
+                opt_bbox = multi_env.box_env.bbox
+                input_box = np.array([opt_bbox['min_x'], opt_bbox['min_y'], 
+                                      opt_bbox['max_x'], opt_bbox['max_y']])
+            else:
+                # Use only node agent
+                opt_pos_indices, opt_neg_indices = optimize_nodes(
+                    node_agent, pos_indices, neg_indices, features, max_steps=100, device=DEVICE, image_size=IMAGE_SIZE
+                )
+            
             end_time = time.time()
             print(f"len(opt_pos_indices): {len(opt_pos_indices)}, len(opt_neg_indices): {len(opt_neg_indices)}")
             print(f"Time to optimize prompts: {end_time - start_time:.4f} seconds")
@@ -123,41 +217,37 @@ def process_single_image(agent, model_dino, model_seg, image_name, reference, ma
             pos_points, neg_points = generate_points(opt_pos_indices, opt_neg_indices, IMAGE_SIZE)
             
             # Add box prompt to segmentation
-            if input_box is not None:
-                mask = seg_main(image, pos_points, neg_points, DEVICE, model_seg, input_box=input_box)
-            else:
-                mask = seg_main(image, pos_points, neg_points, DEVICE, model_seg)
+            mask = seg_main(image, pos_points, neg_points, DEVICE, model_seg, input_box=input_box)
 
             # Refine the mask before saving
-            refined_mask = refine_mask(mask,threshold=0.5)
+            refined_mask = refine_mask(mask, threshold=0.5)
             mask = Image.fromarray(refined_mask)
             mask.save(os.path.join(SAVE_DIR, f"{image_name}"))
 
-            # 保存最终提示点和边界框的可视化图像
+            # Save final prompt points and bounding box visualization image
             plt.figure(figsize=(10, 10))
             plt.imshow(image)
             
-            # 准备点和标签用于可视化
+            # Prepare points and labels for visualization
             coords = np.array(pos_points + neg_points)
             labels = np.concatenate([
                 np.ones(len(pos_points)),
                 np.zeros(len(neg_points))
             ])
             
-            # 显示点
+            # Display points
             show_points(coords, labels, plt.gca())
             
-            # 如果有边界框，则绘制边界框
-            if input_box is not None:
-                rect = plt.Rectangle((input_box[0], input_box[1]),
-                                   input_box[2] - input_box[0],
-                                   input_box[3] - input_box[1],
-                                   fill=False,
-                                   edgecolor='#f08c00',
-                                   linewidth=2.5)
-                plt.gca().add_patch(rect)
+            # Draw bounding box
+            rect = plt.Rectangle((input_box[0], input_box[1]),
+                               input_box[2] - input_box[0],
+                               input_box[3] - input_box[1],
+                               fill=False,
+                               edgecolor='#f08c00',
+                               linewidth=2.5)
+            plt.gca().add_patch(rect)
             
-            # 移除坐标轴并保存图像
+            # Remove axes and save image
             plt.axis('off')
             plt.savefig(os.path.join(FINAL_PROMPTS_DIR, f'{image_name}_final.png'), 
                        bbox_inches='tight', 
@@ -174,10 +264,8 @@ if __name__ == "__main__":
     # Load models
     model_seg, model_dino = load_models()
 
-    # Initialize Q-learning agent
-    env = GraphOptimizationEnv
-    agent = QLearningAgent(env)
-    agent.q_table = torch.load(Q_TABLE_PATH,weights_only=False)
+    # Load multi-agent system
+    node_agent, box_agent = load_agents()
 
     # Get reference image list
     reference_list = os.listdir(REFERENCE_IMAGE_DIR)
@@ -191,6 +279,6 @@ if __name__ == "__main__":
     # Process all images in the test directory
     img_list = os.listdir(IMAGE_DIR)
     for img_name in tqdm(img_list, desc="Processing images"):
-        process_single_image(agent, model_dino, model_seg, img_name, reference, MASK_DIR)
+        process_single_image(node_agent, box_agent, model_dino, model_seg, img_name, reference, MASK_DIR)
 
     print("Processing complete!")

@@ -11,13 +11,13 @@ from utils import refine_mask
 
 # Constants
 IMAGE_SIZE = 560
-# DATASET = 'FSS-1000' 
-DATASET = 'ISIC'
+DATASET = 'FSS-1000' 
+# DATASET = 'ISIC'
 # DATASET = 'Kvasir'
 # CATAGORY = '10'
-CATAGORY = '10'
+# CATAGORY = '10'
 # CATAGORY = 'vineSnake'
-# CATAGORY = 'bandedGecko'
+CATAGORY = 'bandedGecko'
 
 # Directory settings
 BASE_DIR = os.path.dirname(__file__)

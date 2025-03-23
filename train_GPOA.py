@@ -9,7 +9,7 @@ import random
 from collections import defaultdict, deque
 import time
 from datetime import timedelta, datetime
-from utils import GraphOptimizationEnv, QLearningAgent,calculate_distances,convert_to_edges,get_box_node_indices
+from utils import NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, BoxOptimizationEnv, calculate_distances, convert_to_edges, get_box_node_indices
 import json
 
 # Constants
@@ -18,10 +18,11 @@ DATASET = 'ISIC'
 CATAGORY = '10'
 BASE_DIR = os.path.dirname(__file__)
 
-def train_agent(agent, episodes, output_path, base_dir, file_prefixes, max_steps):
-    """训练Q-learning智能体
+def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, file_prefixes, max_steps):
+    """训练多智能体系统
     Args:
-        agent: QLearningAgent实例
+        node_agent: 节点智能体
+        box_agent: 矩形框智能体
         episodes: 训练回合数
         output_path: 输出路径
         base_dir: 训练数据目录 
@@ -110,50 +111,87 @@ def train_agent(agent, episodes, output_path, base_dir, file_prefixes, max_steps
         print(f"Inside bbox - Pos: {len(inside_pos_indices)}, Neg: {len(inside_neg_indices)}")
         print(f"Outside bbox - Pos: {len(outside_pos_indices)}, Neg: {len(outside_neg_indices)}")
 
-        # 初始化环境并开始训练
-        agent.env = GraphOptimizationEnv(G, max_steps)
+        # 初始化多智能体环境
+        multi_env = MultiAgentEnv(G, bbox_data, image_size, max_steps)
+        node_agent.env = multi_env.node_env
+        box_agent.env = multi_env.box_env
         
-        state = agent.env.reset()
+        # 设置特征信息
+        multi_env.box_env.features = features 
+        
+        state = multi_env.reset()
         done = False
         total_reward = 0
 
         # 根据最佳奖励动态调整epsilon
-        normalized_reward = (agent.best_reward - 0) / (5 - 0)
-        if agent.best_reward < 0:
-            agent.epsilon = agent.epsilon_start
-        elif agent.best_reward >= 5:
-            agent.epsilon = agent.epsilon_end
+        normalized_reward = (node_agent.best_reward - 0) / (5 - 0)
+        if node_agent.best_reward < 0:
+            node_agent.epsilon = node_agent.epsilon_start
+            box_agent.epsilon = box_agent.epsilon_start
+        elif node_agent.best_reward >= 5:
+            node_agent.epsilon = node_agent.epsilon_end
+            box_agent.epsilon = box_agent.epsilon_end
         else:
-            agent.epsilon = 1 - normalized_reward
-        print(f"best_reward:{agent.best_reward},epsilon:{agent.epsilon}")
+            node_agent.epsilon = 1 - normalized_reward
+            box_agent.epsilon = 1 - normalized_reward
+        print(f"best_reward:{node_agent.best_reward},node_epsilon:{node_agent.epsilon},box_epsilon:{box_agent.epsilon}")
 
-        # 训练循环
+        # 训练循环 - 交替执行节点智能体和矩形框智能体的动作
+        step_count = 0
         while not done:
-            action = agent.get_action(state)
-            next_state, reward, done = agent.env.step(action)
-            agent.memory.append((state, action, reward, next_state))
-            agent.update_q_table(state, action, reward, next_state)
-            agent.replay()
+            # 在每个时间步，决定要执行的智能体
+            if step_count % 2 == 0:  # 偶数步执行节点智能体动作
+                node_action = node_agent.get_action(state["node"])
+                action_dict = {"node": node_action}
+                next_state, reward, done = multi_env.step(action_dict)
+                
+                # 更新节点智能体Q表和记忆
+                node_agent.memory.append((state["node"], node_action, reward, next_state["node"]))
+                node_agent.update_q_table(state["node"], node_action, reward, next_state["node"])
+                node_agent.replay()
+            else:  # 奇数步执行矩形框智能体动作
+                box_action = box_agent.get_action(state["box"])
+                action_dict = {"box": box_action}
+                print(f"Box action: {box_action}")
+                next_state, reward, done = multi_env.step(action_dict)
+                
+                # 更新矩形框智能体Q表和记忆
+                box_agent.memory.append((state["box"], box_action, reward, next_state["box"]))
+                box_agent.update_q_table(state["box"], box_action, reward, next_state["box"])
+                box_agent.replay()
+            
             state = next_state
             total_reward += reward
-            agent.update_epsilon()
+            step_count += 1
+            
+            # 更新探索率
+            node_agent.update_epsilon()
+            box_agent.update_epsilon()
 
         # 如果当前回合表现更好，更新最佳记录
-        print(total_reward, agent.best_reward)
-        if total_reward > agent.best_reward:
-            agent.best_reward = total_reward
-            agent.best_memory = deque(agent.memory, maxlen=agent.memory.maxlen)
-            agent.replay_best()
+        print(f"Total reward: {total_reward}, Best reward: {node_agent.best_reward}")
+        if total_reward > node_agent.best_reward:
+            node_agent.best_reward = total_reward
+            box_agent.best_reward = total_reward
+            node_agent.best_memory = deque(node_agent.memory, maxlen=node_agent.memory.maxlen)
+            box_agent.best_memory = deque(box_agent.memory, maxlen=box_agent.memory.maxlen)
+            node_agent.replay_best()
+            box_agent.replay_best()
 
         # 保存训练结果
         rewards.append(total_reward)
-        save_results(agent, episode, total_reward, output_path, selected_prefix)
-        agent.last_reward = total_reward
+        save_multi_agent_results(node_agent, box_agent, episode, total_reward, output_path, selected_prefix)
 
         # 计算最终评估指标
-        mean_feature_pos = np.mean(list(nx.get_edge_attributes(agent.env.G, 'feature_pos').values()))
-        mean_feature_cross = np.mean(list(nx.get_edge_attributes(agent.env.G, 'feature_cross').values()))
-        print(f"Episode {episode + 1}/{episodes}, Reward: {total_reward}, Final pos: {mean_feature_pos}, Final cross: {mean_feature_cross}")
+        mean_feature_pos = np.mean(list(nx.get_edge_attributes(multi_env.node_env.G, 'feature_pos').values()))
+        mean_feature_cross = np.mean(list(nx.get_edge_attributes(multi_env.node_env.G, 'feature_cross').values()))
+        pos_ratio_in_box = multi_env.box_env.calculate_pos_ratio_in_box()
+        neg_ratio_out_box = multi_env.box_env.calculate_neg_ratio_out_box()
+        feature_distance = multi_env.box_env.calculate_feature_distance()
+        
+        print(f"Episode {episode + 1}/{episodes}, Reward: {total_reward}")
+        print(f"Node metrics - Final pos: {mean_feature_pos}, Final cross: {mean_feature_cross}")
+        print(f"Box metrics - Pos ratio in box: {pos_ratio_in_box}, Neg ratio out box: {neg_ratio_out_box}, Feature distance: {feature_distance}")
 
         # 计算并显示时间信息
         elapsed_time = time.time() - start_time
@@ -162,41 +200,67 @@ def train_agent(agent, episodes, output_path, base_dir, file_prefixes, max_steps
         print(f"Elapsed Time: {timedelta(seconds=int(elapsed_time))}, Estimated Total Time: {timedelta(seconds=int(estimated_total_time))}, Remaining Time: {timedelta(seconds=int(remaining_time))}")
 
         # 更新并保存最佳模型
-        if mean_feature_pos < agent.best_pos and mean_feature_cross > agent.best_cross:
-            print('Update!')
-            agent.best_pos = mean_feature_pos
-            agent.best_cross = mean_feature_cross
-            agent.best_q_table = agent.q_table.copy()
-            save_best_q_table(agent, output_path)
+        if (mean_feature_pos < node_agent.best_pos and 
+            mean_feature_cross > node_agent.best_cross and
+            pos_ratio_in_box > 0.6 and
+            neg_ratio_out_box > 0.6):
+            print('Update best model!')
+            node_agent.best_pos = mean_feature_pos
+            node_agent.best_cross = mean_feature_cross
+            node_agent.best_q_table = node_agent.q_table.copy()
+            box_agent.best_q_table = box_agent.q_table.copy()
+            save_multi_agent_best_q_table(node_agent, box_agent, output_path)
 
         # 保存不同指标下的最佳模型
-        if total_reward > agent.best_reward_save:
-            agent.best_reward_save = total_reward
-            save_best_model(agent, output_path, 'best_reward_model.pkl')
+        if total_reward > node_agent.best_reward_save:
+            node_agent.best_reward_save = total_reward
+            box_agent.best_reward_save = total_reward
+            save_multi_agent_best_model(node_agent, box_agent, output_path, 'best_reward_model.pkl')
 
-        if mean_feature_pos < agent.best_pos_feature_distance:
-            agent.best_pos_feature_distance = mean_feature_pos
-            save_best_model(agent, output_path, 'best_pos_feature_distance_model.pkl')
+        if mean_feature_pos < node_agent.best_pos_feature_distance:
+            node_agent.best_pos_feature_distance = mean_feature_pos
+            save_best_model(node_agent, output_path, 'best_pos_feature_distance_model.pkl')
 
-        if mean_feature_cross > agent.best_cross_feature_distance:
-            agent.best_cross_feature_distance = mean_feature_cross
-            save_best_model(agent, output_path, 'best_cross_feature_distance_model.pkl')
+        if mean_feature_cross > node_agent.best_cross_feature_distance:
+            node_agent.best_cross_feature_distance = mean_feature_cross
+            save_best_model(node_agent, output_path, 'best_cross_feature_distance_model.pkl')
 
         # 输出最终节点统计信息
-        final_pos_count = len(agent.env.pos_nodes)
-        final_neg_count = len(agent.env.neg_nodes)
+        final_pos_count = len(multi_env.node_env.pos_nodes)
+        final_neg_count = len(multi_env.node_env.neg_nodes)
+        final_bbox = multi_env.box_env.bbox
         print(f"Episode {episode + 1}: Final positive nodes count: {final_pos_count}, Final negative nodes count: {final_neg_count}")
+        print(f"Final bounding box: {final_bbox}")
 
     return rewards
 
-def save_results(agent, episode, reward, output_path, prefix):
-    """Save the results of an episode in txt."""
-    G_state = agent.env.get_state()
-    pos_nodes = [node for node, data in G_state.nodes(data=True) if data['category'] == 'pos']
-    neg_nodes = [node for node, data in G_state.nodes(data=True) if data['category'] == 'neg']
+def save_multi_agent_results(node_agent, box_agent, episode, reward, output_path, prefix):
+    """保存多智能体训练结果"""
+    node_state = node_agent.env.get_state()
+    box_state, bbox = box_agent.env.get_state()
+    
+    pos_nodes = [node for node, data in node_state.nodes(data=True) if data['category'] == 'pos']
+    neg_nodes = [node for node, data in node_state.nodes(data=True) if data['category'] == 'neg']
 
     with open(f"{output_path}/{prefix}_rewards.txt", "a") as f:
         f.write(f"Episode {episode}: Reward: {reward}\n")
+        f.write(f"Positive nodes: {len(pos_nodes)}, Negative nodes: {len(neg_nodes)}\n")
+        f.write(f"Bounding box: {bbox}\n\n")
+
+def save_multi_agent_best_q_table(node_agent, box_agent, output_path):
+    """保存最佳Q表"""
+    with open(f"{output_path}/node_best_q_table.pkl", "wb") as f:
+        torch.save(node_agent.best_q_table, f)
+    with open(f"{output_path}/box_best_q_table.pkl", "wb") as f:
+        torch.save(box_agent.best_q_table, f)
+
+def save_multi_agent_best_model(node_agent, box_agent, output_path, filename):
+    """保存多智能体最佳模型"""
+    with open(f"{output_path}/node_{filename}", "wb") as f:
+        torch.save(node_agent.q_table, f)
+    with open(f"{output_path}/box_{filename}", "wb") as f:
+        torch.save(box_agent.q_table, f)
+    print(f"Best multi-agent model saved with reward: {node_agent.best_reward}")
 
 def save_best_q_table(agent, output_path):
     """Save the best Q-table."""
@@ -210,7 +274,7 @@ def save_best_model(agent, output_path, filename):
     print(f"Best model saved with reward: {agent.best_reward}")
 
 def main():
-    """Main function to train the Q-learning agent."""
+    """Main function to train the multi-agent system."""
     # 设置初始提示数据目录路径
     base_dir = os.path.join(BASE_DIR, 'results', DATASET, CATAGORY, 'initial_prompts')
     # 获取目录下所有文件
@@ -219,19 +283,34 @@ def main():
     file_prefixes = set('_'.join(f.split('_')[:3]) for f in files)
     # 训练参数设置
     max_steps = 100 # 每个episode的最大步数
-    env = GraphOptimizationEnv # 初始化环境
-    agent = QLearningAgent(env) # 初始化Q-learning agent
+    
+    # 初始化节点智能体和矩形框智能体
+    node_env = NodeOptimizationEnv
+    box_env = BoxOptimizationEnv
+    node_agent = NodeAgent(node_env)
+    box_agent = BoxAgent(box_env)
+    
     # 创建输出目录
     current_time = datetime.now().strftime("%Y%m%d_%H%M") # 当前时间
     output_path = os.path.join(os.path.dirname(__file__), 'train', current_time) # 输出目录
-    # 训练智能体
-    rewards = train_agent(agent, episodes=30, output_path=output_path, base_dir=base_dir, file_prefixes=file_prefixes, max_steps=max_steps)
+    
+    # 训练多智能体系统
+    rewards = train_multi_agent(
+        node_agent, 
+        box_agent, 
+        episodes=30, 
+        output_path=output_path, 
+        base_dir=base_dir, 
+        file_prefixes=file_prefixes, 
+        max_steps=max_steps
+    )
+    
     # 绘制训练奖励曲线
     import matplotlib.pyplot as plt
     plt.plot(rewards)
     plt.xlabel('Episode')
     plt.ylabel('Reward')
-    plt.title('Training Rewards Over Episodes')
+    plt.title('Multi-Agent Training Rewards Over Episodes')
     plt.savefig(f"{output_path}/rewards_plot.png")
     plt.show()
 
