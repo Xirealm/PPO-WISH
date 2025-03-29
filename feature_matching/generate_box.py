@@ -12,103 +12,162 @@ def get_patch_coordinates(indices, image_size=560, patch_size=14):
     centers_y = (rows * patch_size + patch_size // 2).astype(int)
     return np.column_stack((centers_x, centers_y))
 
-def cluster_features(features, pos_indices, eps=28, min_samples=3):
-    """
-    对所有patch进行聚类，并基于正样本识别目标相关的cluster
-    """
-    # 获取所有patch的特征和坐标
-    all_features = features[1]
-    num_patches = all_features.shape[0]
-    all_indices = torch.arange(num_patches)
-    all_coordinates = get_patch_coordinates(all_indices)
+def cluster_features(features, pos_indices, eps=0.4, min_samples=2):
+    """多尺度特征聚类策略"""
+    all_features = features[1]  # [N, D]
+    device = all_features.device
+    patches_per_side = int(np.sqrt(all_features.shape[0]))
     
-    # 使用DBSCAN在物理空间进行聚类
-    clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(all_coordinates)
-    labels = clustering.labels_
+    pos_features = all_features[pos_indices]
+    pos_center = pos_features.mean(0)
+    similarities = torch.nn.functional.cosine_similarity(all_features, pos_center.unsqueeze(0))
     
-    # 组织聚类结果
-    unique_labels = np.unique(labels)
-    print(len(unique_labels))
     clustered_indices = []
-    pos_indices_set = set(pos_indices.cpu().numpy())
+    # 相似度阈值
+    similarity_thresholds = [0.8, 0.6] 
     
-    for label in unique_labels:
-        if label != -1:  # 排除噪声点
-            cluster_mask = (labels == label)
-            cluster_indices = all_indices[cluster_mask]
+    for threshold in similarity_thresholds:
+        similar_mask = similarities > threshold
+        candidate_indices = torch.where(similar_mask)[0].to(device)
+        
+        if len(candidate_indices) >= min_samples:
+            coords = get_patch_coordinates(candidate_indices)
+            pos_coords = get_patch_coordinates(pos_indices)
+            dist_mask = np.min(np.linalg.norm(coords[:, None] - pos_coords, axis=2), axis=1) < 112
+            candidate_indices = candidate_indices[torch.from_numpy(dist_mask).to(device)]
             
-            # 计算cluster中包含的正样本比例
-            pos_in_cluster = set(cluster_indices.numpy()) & pos_indices_set
-            pos_ratio = len(pos_in_cluster) / len(cluster_indices)
-            
-            print(pos_ratio)
-            # 只有当cluster包含足够比例的正样本时才保留
-            if pos_ratio >= 0.1:  # 可调整的阈值
-                # 验证特征空间的相似性
-                cluster_features = all_features[cluster_indices]
-                pos_mean_feature = torch.mean(all_features[list(pos_indices_set)], dim=0)
-                distances = torch.norm(cluster_features - pos_mean_feature, dim=1)
-                
-                # 保留特征相似的点
-                valid_indices = distances < 0.5  # 可调整的特征相似性阈值
-                print(valid_indices)
-                if torch.sum(valid_indices) >= min_samples:
-                    clustered_indices.append(cluster_indices[valid_indices])
+            if len(candidate_indices) >= min_samples:
+                clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(all_features[candidate_indices].cpu().numpy())
+                for label in np.unique(clustering.labels_):
+                    if label != -1:
+                        cluster_indices = candidate_indices[clustering.labels_ == label]
+                        if len(cluster_indices) >= min_samples:
+                            clustered_indices.append(cluster_indices)
     
-    return clustered_indices
+    # 进行窗口聚类
+    window_size, stride = 5, 3
+    for i in range(0, patches_per_side - window_size + 1, stride):
+        for j in range(0, patches_per_side - window_size + 1, stride):
+            window_indices = torch.tensor([(i + wi) * patches_per_side + (j + wj) 
+                                         for wi in range(window_size) 
+                                         for wj in range(window_size)], device=device)
+            high_sim_mask = similarities[window_indices] > 0.5 
+            if high_sim_mask.sum() >= min_samples:
+                clustered_indices.append(window_indices[high_sim_mask])
+    
+    # 移除重复的聚类
+    final_clusters = []
+    used_indices = set()
+    
+    for indices in clustered_indices:
+        indices_set = set(indices.cpu().numpy())
+        new_indices = indices_set - used_indices
+        if len(new_indices) >= min_samples:
+            final_clusters.append(torch.tensor(list(new_indices), device=device))
+            used_indices.update(new_indices)
+    
+    return final_clusters
 
-def calculate_box_from_indices(indices, image_size=560, patch_size=14, padding=14):
-    """
-    计算更紧凑的边界框
-    """
+def calculate_box_from_indices(indices, image_size=560, patch_size=14):
+    """计算边界框"""
     coordinates = get_patch_coordinates(indices)
+    padding = patch_size // 2
     
-    min_x = max(0, np.min(coordinates[:, 0]) - padding)
-    min_y = max(0, np.min(coordinates[:, 1]) - padding)
-    max_x = min(image_size, np.max(coordinates[:, 0]) + padding)
-    max_y = min(image_size, np.max(coordinates[:, 1]) + padding)
+    min_x, min_y = np.maximum(0, np.min(coordinates, axis=0) - padding)
+    max_x, max_y = np.minimum(image_size, np.max(coordinates, axis=0) + padding)
     
-    # 确保边界框的最小尺寸
-    if max_x - min_x < patch_size:
-        center_x = (max_x + min_x) // 2
-        min_x = max(0, center_x - patch_size)
-        max_x = min(image_size, center_x + patch_size)
-    
-    if max_y - min_y < patch_size:
-        center_y = (max_y + min_y) // 2
-        min_y = max(0, center_y - patch_size)
-        max_y = min(image_size, center_y + patch_size)
+    # 确保最小尺寸
+    for min_val, max_val in [(min_x, max_x), (min_y, max_y)]:
+        if max_val - min_val < patch_size * 2:
+            center = (max_val + min_val) // 2
+            min_val = max(0, center - patch_size)
+            max_val = min(image_size, center + patch_size)
     
     return (min_x, min_y, max_x, max_y)
 
-def merge_boxes(boxes):
+def filter_overlapping_boxes(boxes, iou_threshold=0.7):
     """
-    合并多个边界框为一个
+    过滤重叠度过高的box
+    """
+    if not boxes:
+        return []
+    
+    def calculate_iou(box1, box2):
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+        
+        if x2 <= x1 or y2 <= y1:
+            return 0
+            
+        intersection = (x2 - x1) * (y2 - y1)
+        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        iou = intersection / (area1 + area2 - intersection)
+        return iou
+    
+    # 按面积从大到小排序
+    boxes = sorted(boxes, key=lambda box: (box[2]-box[0])*(box[3]-box[1]), reverse=True)
+    filtered_boxes = []
+    
+    for box1 in boxes:
+        should_keep = True
+        for box2 in filtered_boxes:
+            if calculate_iou(box1, box2) > iou_threshold:
+                should_keep = False
+                break
+        if should_keep:
+            filtered_boxes.append(box1)
+    
+    return filtered_boxes
+
+def merge_boxes(boxes, min_distance=112):
+    """
+    修改合并策略，保持更多有效box
     """
     if not boxes:
         return None
-        
-    min_x = min(box[0] for box in boxes)
-    min_y = min(box[1] for box in boxes)
-    max_x = max(box[2] for box in boxes)
-    max_y = max(box[3] for box in boxes)
     
-    return (min_x, min_y, max_x, max_y)
+    # 首先过滤重叠box
+    boxes = filter_overlapping_boxes(boxes)
+    
+    # 如果只剩一个box，直接返回
+    if len(boxes) == 1:
+        return boxes[0]
+    
+    # 计算所有box的外接矩形
+    final_box = (
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes)
+    )
+    
+    # 适当扩展final_box
+    padding = 14
+    image_size = 560
+    center_x = (final_box[0] + final_box[2]) / 2
+    center_y = (final_box[1] + final_box[3]) / 2
+    width = final_box[2] - final_box[0]
+    height = final_box[3] - final_box[1]
+    
+    final_box = (
+        max(0, int(center_x - width/2 - padding)),
+        max(0, int(center_y - height/2 - padding)),
+        min(image_size, int(center_x + width/2 + padding)),
+        min(image_size, int(center_y + height/2 + padding))
+    )
+    
+    return final_box
 
 def generate_boxes(features, pos_indices):
-    """
-    生成基于局部特征的边界框
-    """
-    # 特征聚类
-    clustered_indices = cluster_features(features, pos_indices)
+    """生成边界框"""
+    clusters = cluster_features(features, pos_indices)
+    boxes = [calculate_box_from_indices(indices) for indices in clusters]
     
-    # 为每个聚类生成边界框
-    cluster_boxes = []
-    for indices in clustered_indices:
-        box = calculate_box_from_indices(indices)
-        cluster_boxes.append(box)
+    # 过滤重叠box
+    filtered_boxes = filter_overlapping_boxes(boxes)
+    merged_box = merge_boxes(filtered_boxes) if filtered_boxes else None
     
-    # 合并所有边界框
-    merged_box = merge_boxes(cluster_boxes) if cluster_boxes else None
-    
-    return cluster_boxes, merged_box
+    return filtered_boxes, merged_box
