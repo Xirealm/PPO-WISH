@@ -21,6 +21,7 @@ sys.path.append(segment_path)
 sys.path.append(generate_path)
 
 from feature_matching.generate_points import generate, loading_dino, distance_calculate
+from feature_matching.generate_box import generate_boxes
 from segmenter.segment import show_points
 
 # Function to draw points on an image
@@ -131,10 +132,29 @@ def main():
             torch.save(initial_indices_pos, os.path.join(save_dir, name + '_initial_indices_pos.pt'))
             torch.save(initial_indices_neg, os.path.join(save_dir, name + '_initial_indices_neg.pt'))
             
-            # Create figure and plot image
+            # 生成box提示
+            cluster_boxes, merged_box = generate_boxes(features, initial_indices_pos)
+            
+            # 保存边界框数据
+            box_data = {
+                'cluster_boxes': [
+                    {'min_x': int(box[0]), 'min_y': int(box[1]), 
+                     'max_x': int(box[2]), 'max_y': int(box[3])} 
+                    for box in cluster_boxes
+                ],
+                'merged_box': {
+                    'min_x': int(merged_box[0]), 'min_y': int(merged_box[1]),
+                    'max_x': int(merged_box[2]), 'max_y': int(merged_box[3])
+                } if merged_box else None
+            }
+            with open(os.path.join(save_dir, name + '_bbox.json'), 'w') as f:
+                json.dump(box_data, f)
+            
+            # 绘制结果
             plt.figure(figsize=(10, 10))
             plt.imshow(image)
-            # Prepare points and labels for visualization
+            
+            # 绘制提示点
             pos_points = calculate_center_points(initial_indices_pos, 560)
             neg_points = calculate_center_points(initial_indices_neg, 560)
             coords = np.array(pos_points + neg_points)
@@ -144,34 +164,32 @@ def main():
             ])
             show_points(coords, labels, plt.gca())
             
-            # 计算并保存边界框
-            bbox = calculate_bounding_box(pos_points)
-            if bbox is not None:
-                min_x, min_y, max_x, max_y = bbox
-                # 保存边界框坐标为JSON格式
-                bbox_data = {
-                    'min_x': int(min_x),
-                    'min_y': int(min_y),
-                    'max_x': int(max_x),
-                    'max_y': int(max_y)
-                }
-                with open(os.path.join(save_dir, name + '_bbox.json'), 'w') as f:
-                    json.dump(bbox_data, f)
-                
-                # 绘制边界框
-                rect = plt.Rectangle((min_x, min_y), 
-                                  max_x - min_x, 
-                                  max_y - min_y,
+            # 绘制聚类边界框
+            for box in cluster_boxes:
+                rect = plt.Rectangle((box[0], box[1]), 
+                                  box[2] - box[0], 
+                                  box[3] - box[1],
+                                  fill=False,
+                                  edgecolor='#4c6ef5',
+                                  linewidth=1.5,
+                                  linestyle='--')
+                plt.gca().add_patch(rect)
+            
+            # 绘制合并后的边界框
+            if merged_box:
+                rect = plt.Rectangle((merged_box[0], merged_box[1]), 
+                                  merged_box[2] - merged_box[0], 
+                                  merged_box[3] - merged_box[1],
                                   fill=False,
                                   edgecolor='#f08c00',
                                   linewidth=2.5)
                 plt.gca().add_patch(rect)
             
-            # Remove axes and save figure
+            # 保存结果
             plt.axis('off')
-            plt.savefig(os.path.join(initial_image_dir, f'{name}_initial.png'), bbox_inches='tight', pad_inches=0)
-            plt.close()           
-            # feature_pos_distances, feature_cross_distances, physical_pos_distances, physical_cross_distances = distance_calculate(features, initial_indices_pos, initial_indices_neg, image_size)
+            plt.savefig(os.path.join(initial_image_dir, f'{name}_initial.png'), 
+                       bbox_inches='tight', pad_inches=0)
+            plt.close()
         else:
             print(f"No positive or negative indices found for {name}")
 
