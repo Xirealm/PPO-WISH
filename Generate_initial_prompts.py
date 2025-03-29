@@ -81,7 +81,7 @@ def calculate_bounding_box(points, patch_size=14, image_size=560):
 
 def main():
     # Hyperparameter setting
-    dataset_name = os.path.join('ISIC','10')
+    dataset_name = os.path.join('FSS-1000','vineSnake')
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     image_size = 560 # Must be a multiple of 14
 
