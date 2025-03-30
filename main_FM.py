@@ -19,7 +19,7 @@ sys.path.append(generate_path)
 from segmenter.segment import process_image, loading_seg, seg_main, show_points
 from feature_matching.generate_points import generate, loading_dino, distance_calculate
 from test_GPOA import test_agent, optimize_nodes
-from utils import  NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, calculate_distances, convert_to_edges, calculate_bounding_box, calculate_center_points, refine_mask, get_box_node_indices, BoxOptimizationEnv
+from utils import  NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, calculate_distances, convert_to_edges, calculate_center_points, refine_mask, BoxOptimizationEnv
 
 # Ignore all warnings
 warnings.filterwarnings("ignore")
@@ -27,7 +27,7 @@ warnings.filterwarnings("ignore")
 # DATASET = 'FSS-1000' 
 DATASET = 'ISIC'
 # DATASET = 'Kvasir'
-CATAGORY = '10'
+CATAGORY = '100'
 # CATAGORY = '100'
 # CATAGORY = 'vineSnake'
 # CATAGORY = 'bandedGecko'
@@ -191,15 +191,23 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
                 opt_neg_indices = torch.tensor([node for node in multi_env.node_env.neg_nodes])
                 optimized_boxes = multi_env.box_env.boxes
                 
+                # 合并所有优化后的box为最终box
+                final_box = {
+                    'min_x': min(box['min_x'] for box in optimized_boxes),
+                    'min_y': min(box['min_y'] for box in optimized_boxes),
+                    'max_x': max(box['max_x'] for box in optimized_boxes),
+                    'max_y': max(box['max_y'] for box in optimized_boxes)
+                }
+                
                 # Generate points first 
                 pos_points = calculate_center_points(opt_pos_indices, IMAGE_SIZE)
                 neg_points = calculate_center_points(opt_neg_indices, IMAGE_SIZE)
 
-                # 可视化所有优化后的box和点
+                # 可视化优化后的点和boxes
                 plt.figure(figsize=(10, 10))
                 plt.imshow(image)
                 
-                # 显示点和所有box
+                # 显示点和所有小box
                 coords = np.array(pos_points + neg_points)
                 labels = np.concatenate([
                     np.ones(len(pos_points)),
@@ -207,7 +215,7 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
                 ])
                 show_points(coords, labels, plt.gca())
                 
-                # 绘制所有优化后的box
+                # 绘制所有优化后的小box
                 for i, box in enumerate(optimized_boxes):
                     rect = plt.Rectangle(
                         (box['min_x'], box['min_y']),
@@ -219,17 +227,19 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
                     )
                     plt.gca().add_patch(rect)
                 
-                # 如果需要，也可以绘制合并后的box
-                if merged_box is not None:
-                    rect = plt.Rectangle(
-                        (merged_box[0], merged_box[1]),
-                        merged_box[2] - merged_box[0],
-                        merged_box[3] - merged_box[1],
-                        fill=False,
-                        edgecolor='#f08c00',
-                        linewidth=2.5
-                    )
-                    plt.gca().add_patch(rect)
+                # 绘制最终合并的box
+                rect = plt.Rectangle(
+                    (final_box['min_x'], final_box['min_y']),
+                    final_box['max_x'] - final_box['min_x'],
+                    final_box['max_y'] - final_box['min_y'],
+                    fill=False,
+                    edgecolor='#f08c00',
+                    linewidth=2.5
+                )
+                plt.gca().add_patch(rect)
+                
+                # 将最终box添加到优化结果中
+                multi_env.box_env.final_box = final_box
             else:
                 # Use only node agent
                 opt_pos_indices, opt_neg_indices = optimize_nodes(

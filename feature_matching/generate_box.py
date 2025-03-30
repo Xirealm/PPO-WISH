@@ -122,9 +122,15 @@ def filter_overlapping_boxes(boxes, iou_threshold=0.7):
     
     return filtered_boxes
 
-def merge_boxes(boxes, min_distance=112):
+def count_patches(box, patch_size=14):
+    """计算box包含的patch数量"""
+    width = (box[2] - box[0]) // patch_size
+    height = (box[3] - box[1]) // patch_size
+    return width * height
+
+def merge_boxes(boxes, min_distance=112, patch_size=14):
     """
-    修改合并策略，保持更多有效box
+    修改合并策略，过滤patch数量少的box并合并邻接box
     """
     if not boxes:
         return None
@@ -132,31 +138,53 @@ def merge_boxes(boxes, min_distance=112):
     # 首先过滤重叠box
     boxes = filter_overlapping_boxes(boxes)
     
-    # 如果只剩一个box，直接返回
-    if len(boxes) == 1:
-        return boxes[0]
+    def are_adjacent(box1, box2):
+        # 计算两个box的中心点距离
+        center1 = ((box1[0] + box1[2]) / 2, (box1[1] + box1[3]) / 2)
+        center2 = ((box2[0] + box2[2]) / 2, (box2[1] + box2[3]) / 2)
+        distance = ((center1[0] - center2[0]) ** 2 + (center1[1] - center2[1]) ** 2) ** 0.5
+        return distance < min_distance * 1.5
+
+    # 首先筛选出有效的box
+    valid_boxes = [box for box in boxes if count_patches(box) > 3]
+    if not valid_boxes:
+        return None
+
+    # 处理小box
+    merged = False
+    for box in boxes:
+        if count_patches(box) <= 3:  # 对于小box
+            for i, valid_box in enumerate(valid_boxes):
+                if are_adjacent(box, valid_box):
+                    # 合并小box到邻接的valid box
+                    valid_boxes[i] = (
+                        min(valid_box[0], box[0]),
+                        min(valid_box[1], box[1]),
+                        max(valid_box[2], box[2]),
+                        max(valid_box[3], box[3])
+                    )
+                    merged = True
+                    break
     
-    # 计算所有box的外接矩形
+    # 如果只有一个box，直接返回
+    if len(valid_boxes) == 1:
+        return valid_boxes[0]
+    
+    # 计算最终的合并box
     final_box = (
-        min(box[0] for box in boxes),
-        min(box[1] for box in boxes),
-        max(box[2] for box in boxes),
-        max(box[3] for box in boxes)
+        min(box[0] for box in valid_boxes),
+        min(box[1] for box in valid_boxes),
+        max(box[2] for box in valid_boxes),
+        max(box[3] for box in valid_boxes)
     )
     
-    # 适当扩展final_box
-    padding = 14
+    # 确保边界有效
     image_size = 560
-    center_x = (final_box[0] + final_box[2]) / 2
-    center_y = (final_box[1] + final_box[3]) / 2
-    width = final_box[2] - final_box[0]
-    height = final_box[3] - final_box[1]
-    
     final_box = (
-        max(0, int(center_x - width/2 - padding)),
-        max(0, int(center_y - height/2 - padding)),
-        min(image_size, int(center_x + width/2 + padding)),
-        min(image_size, int(center_y + height/2 + padding))
+        max(0, final_box[0]),
+        max(0, final_box[1]),
+        min(image_size, final_box[2]),
+        min(image_size, final_box[3])
     )
     
     return final_box
@@ -168,6 +196,13 @@ def generate_boxes(features, pos_indices):
     
     # 过滤重叠box
     filtered_boxes = filter_overlapping_boxes(boxes)
-    merged_box = merge_boxes(filtered_boxes) if filtered_boxes else None
     
+    # 过滤掉patch数小于等于3的box
+    filtered_boxes = [box for box in filtered_boxes if count_patches(box) > 2]
+    
+    # 如果filtered_boxes为空，直接返回None
+    if not filtered_boxes:
+        return [], None
+        
+    merged_box = merge_boxes(filtered_boxes)
     return filtered_boxes, merged_box
