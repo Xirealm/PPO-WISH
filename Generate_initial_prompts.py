@@ -53,7 +53,7 @@ def save_tensor_to_txt(tensor, filename):
 
 def main():
     # Hyperparameter setting
-    dataset_name = os.path.join('FSS-1000','bandedGecko')
+    dataset_name = os.path.join('ISIC','10')
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     image_size = 560 # Must be a multiple of 14
 

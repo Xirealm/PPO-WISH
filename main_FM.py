@@ -19,7 +19,7 @@ sys.path.append(generate_path)
 from segmenter.segment import process_image, loading_seg, seg_main, show_points
 from feature_matching.generate_points import generate, loading_dino, distance_calculate
 from test_GPOA import test_agent, optimize_nodes
-from utils import generate_points, NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, calculate_distances, convert_to_edges, calculate_bounding_box, calculate_center_points, refine_mask, get_box_node_indices, BoxOptimizationEnv
+from utils import  NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, calculate_distances, convert_to_edges, calculate_bounding_box, calculate_center_points, refine_mask, get_box_node_indices, BoxOptimizationEnv
 
 # Ignore all warnings
 warnings.filterwarnings("ignore")
@@ -124,27 +124,18 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
         print(f"Time to generate initial prompts: {end_time - start_time:.4f} seconds")
 
         if len(pos_indices) != 0 and len(neg_indices) != 0:
-            # Generate bounding box for positive points
-            pos_points = calculate_center_points(pos_indices, IMAGE_SIZE)
-            initial_bbox = calculate_bounding_box(pos_points, patch_size=14, image_size=IMAGE_SIZE)
+            # 使用聚类生成的多个box
+            from feature_matching.generate_box import generate_boxes
+            boxes, merged_box = generate_boxes(features, pos_indices)
             
-            if initial_bbox is not None:
-                min_x, min_y, max_x, max_y = initial_bbox
-                bbox_data = {'min_x': min_x, 'min_y': min_y, 'max_x': max_x, 'max_y': max_y}
-                print(f"Generated bounding box: ({min_x}, {min_y}, {max_x}, {max_y})")
-                input_box = np.array([min_x, min_y, max_x, max_y])
-            else:
-                print("No valid bounding box generated")
-                center = IMAGE_SIZE // 2
-                size = IMAGE_SIZE // 4
-                bbox_data = {
-                    'min_x': center - size // 2,
-                    'min_y': center - size // 2,
-                    'max_x': center + size // 2,
-                    'max_y': center + size // 2
+            # 转换box格式
+            box_data = [
+                {
+                    'min_x': int(box[0]), 'min_y': int(box[1]),
+                    'max_x': int(box[2]), 'max_y': int(box[3])
                 }
-                input_box = np.array([bbox_data['min_x'], bbox_data['min_y'], 
-                                      bbox_data['max_x'], bbox_data['max_y']])
+                for box in boxes
+            ]
 
             # Calculate feature distances and physical distances
             feature_pos_distances, feature_cross_distances, physical_pos_distances, physical_neg_distances, physical_cross_distances = calculate_distances(
@@ -169,16 +160,14 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
             G.add_weighted_edges_from(feature_cross_edge, weight='feature_cross')
             G.add_weighted_edges_from(physical_cross_edge, weight='physical_cross')
 
-            # Use multi-agent system to optimize prompts
-            start_time = time.time()
+            # 使用多box系统优化
             if box_agent is not None:
-                # Use multi-agent system
-                multi_env = MultiAgentEnv(G, bbox_data, IMAGE_SIZE, max_steps=100)
+                multi_env = MultiAgentEnv(G, box_data, IMAGE_SIZE, max_steps=100)
                 node_agent.env = multi_env.node_env
                 box_agent.env = multi_env.box_env
                 
                 # 设置特征信息
-                multi_env.box_env.features = features 
+                multi_env.box_env.features = features
                 
                 state = multi_env.reset()
                 done = False
@@ -200,9 +189,47 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
                 # Get optimized prompts and bounding box
                 opt_pos_indices = torch.tensor([node for node in multi_env.node_env.pos_nodes])
                 opt_neg_indices = torch.tensor([node for node in multi_env.node_env.neg_nodes])
-                opt_bbox = multi_env.box_env.bbox
-                input_box = np.array([opt_bbox['min_x'], opt_bbox['min_y'], 
-                                      opt_bbox['max_x'], opt_bbox['max_y']])
+                optimized_boxes = multi_env.box_env.boxes
+                
+                # Generate points first 
+                pos_points = calculate_center_points(opt_pos_indices, IMAGE_SIZE)
+                neg_points = calculate_center_points(opt_neg_indices, IMAGE_SIZE)
+
+                # 可视化所有优化后的box和点
+                plt.figure(figsize=(10, 10))
+                plt.imshow(image)
+                
+                # 显示点和所有box
+                coords = np.array(pos_points + neg_points)
+                labels = np.concatenate([
+                    np.ones(len(pos_points)),
+                    np.zeros(len(neg_points))
+                ])
+                show_points(coords, labels, plt.gca())
+                
+                # 绘制所有优化后的box
+                for i, box in enumerate(optimized_boxes):
+                    rect = plt.Rectangle(
+                        (box['min_x'], box['min_y']),
+                        box['max_x'] - box['min_x'],
+                        box['max_y'] - box['min_y'],
+                        fill=False,
+                        edgecolor=plt.cm.Set3(i / len(optimized_boxes)),
+                        linewidth=2.0
+                    )
+                    plt.gca().add_patch(rect)
+                
+                # 如果需要，也可以绘制合并后的box
+                if merged_box is not None:
+                    rect = plt.Rectangle(
+                        (merged_box[0], merged_box[1]),
+                        merged_box[2] - merged_box[0],
+                        merged_box[3] - merged_box[1],
+                        fill=False,
+                        edgecolor='#f08c00',
+                        linewidth=2.5
+                    )
+                    plt.gca().add_patch(rect)
             else:
                 # Use only node agent
                 opt_pos_indices, opt_neg_indices = optimize_nodes(
@@ -213,11 +240,8 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
             print(f"len(opt_pos_indices): {len(opt_pos_indices)}, len(opt_neg_indices): {len(opt_neg_indices)}")
             print(f"Time to optimize prompts: {end_time - start_time:.4f} seconds")
 
-            # Generate points and perform segmentation
-            pos_points, neg_points = generate_points(opt_pos_indices, opt_neg_indices, IMAGE_SIZE)
-            
-            # Add box prompt to segmentation
-            mask = seg_main(image, pos_points, neg_points, DEVICE, model_seg, input_box=input_box)
+            # Perform segmentation
+            mask = seg_main(image, pos_points, neg_points, DEVICE, model_seg)
 
             # Refine the mask before saving
             refined_mask = refine_mask(mask, threshold=0.5)
@@ -225,29 +249,6 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
             mask.save(os.path.join(SAVE_DIR, f"{image_name}"))
 
             # Save final prompt points and bounding box visualization image
-            plt.figure(figsize=(10, 10))
-            plt.imshow(image)
-            
-            # Prepare points and labels for visualization
-            coords = np.array(pos_points + neg_points)
-            labels = np.concatenate([
-                np.ones(len(pos_points)),
-                np.zeros(len(neg_points))
-            ])
-            
-            # Display points
-            show_points(coords, labels, plt.gca())
-            
-            # Draw bounding box
-            rect = plt.Rectangle((input_box[0], input_box[1]),
-                               input_box[2] - input_box[0],
-                               input_box[3] - input_box[1],
-                               fill=False,
-                               edgecolor='#f08c00',
-                               linewidth=2.5)
-            plt.gca().add_patch(rect)
-            
-            # Remove axes and save image
             plt.axis('off')
             plt.savefig(os.path.join(FINAL_PROMPTS_DIR, f'{image_name}_final.png'), 
                        bbox_inches='tight', 

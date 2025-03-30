@@ -56,30 +56,12 @@ def calculate_bounding_box(points, patch_size=14, image_size=560):
     
     return min_x, min_y, max_x, max_y
 
-def map_to_original_size(resized_coordinates, original_size, image_size):
-    """Map resized coordinates back to the original image size."""
-    original_height, original_width = original_size
-    scale_height = original_height / image_size
-    scale_width = original_width / image_size
-
-    if isinstance(resized_coordinates, tuple):
-        resized_x, resized_y = resized_coordinates
-        original_x = resized_x * scale_width
-        original_y = resized_y * scale_height
-        return original_x, original_y
-    elif isinstance(resized_coordinates, list):
-        original_coordinates = [[round(x * scale_width), round(y * scale_height)] for x, y in resized_coordinates]
-        return original_coordinates
-    else:
-        raise ValueError("Unsupported input format. Please provide a tuple or list of coordinates.")
-
 def normalize_distances(distances):
     """Normalize the distances to be between 0 and 1."""
     max_distance = torch.max(distances)
     min_distance = torch.min(distances)
     normalized_distances = (distances - min_distance) / (max_distance - min_distance)
     return normalized_distances
-
 
 def refine_mask(mask,threshold):
 
@@ -104,19 +86,6 @@ def refine_mask(mask,threshold):
     cv2.drawContours(contour_mask, filtered_contours, -1, 255, -1)
 
     return contour_mask
-
-def generate_points(positive_indices, negative_indices, image_size):
-    """Generate positive and negative points mapped to original size."""
-    positive_points = calculate_center_points(positive_indices, image_size)
-    negative_points = calculate_center_points(negative_indices, image_size)
-
-    unique_positive_points = set(tuple(point) for point in positive_points)
-    unique_negative_points = set(tuple(point) for point in negative_points)
-
-    mapped_positive_points = map_to_original_size(list(unique_positive_points), [560, 560], image_size)
-    mapped_negative_points = map_to_original_size(list(unique_negative_points), [560, 560], image_size)
-
-    return mapped_positive_points, mapped_negative_points
 
 def calculate_distances(features, positive_indices, negative_indices, image_size, device):
     """Calculate feature and physical distances."""
@@ -406,7 +375,7 @@ class NodeAgent:
             state_hash = self._get_state_hash(state)
             q_values = {action: self.q_table.get((state_hash, action), 0) for action in actions}
             max_q = max(q_values.values())
-            action = random.choice([action for action, q in q_values.items() if q == max_q])
+            action = random.choice([action for action, q in q_values.items() if q == max_q])  
 
         return action
 
@@ -456,20 +425,6 @@ class NodeAgent:
                 actions.extend(restore_neg_actions)
             elif neg_nodes_count >= self.env.max_nodes:
                 actions.extend(remove_neg_actions)
-
-        # 取消重复的添加删除操作的动作
-        # 保证 remove_pos 和 remove_neg 行为的数量一致
-        # if len(remove_pos_actions) < len(remove_neg_actions):
-        #     remove_neg_actions = random.sample(remove_neg_actions, len(remove_pos_actions))
-        # elif len(remove_neg_actions) < len(remove_pos_actions):
-        #     remove_pos_actions = random.sample(remove_pos_actions, len(remove_neg_actions))
-
-        # actions.extend(remove_pos_actions)
-        # actions.extend(remove_neg_actions)
-        
-        ''' debug:检测是否存在重复行为 '''
-        # print(f"actions length: {len(actions)}")
-        # print(f"set actions length: {len(set(actions))}")
 
         return actions
 
@@ -558,13 +513,31 @@ def is_point_in_box(point, bbox):
     return (bbox['min_x'] <= x <= bbox['max_x'] and 
             bbox['min_y'] <= y <= bbox['max_y'])
 
-def get_box_node_indices(G, bbox):
+def is_point_in_any_box(point, boxes):
+    """
+    判断点是否在任意一个边界框内
+    
+    Args:
+        point (list): [x, y] 格式的点坐标
+        boxes (list): box字典列表，每个字典包含min_x,min_y,max_x,max_y
+    
+    Returns:
+        tuple: (bool, int) - 是否在box内及box索引
+    """
+    x, y = point
+    for i, box in enumerate(boxes):
+        if (box['min_x'] <= x <= box['max_x'] and 
+            box['min_y'] <= y <= box['max_y']):
+            return True, i
+    return False, -1
+
+def get_box_node_indices(G, boxes):
     """
     获取在边界框内和外的节点索引
     
     Args:
         G (networkx.Graph): 图结构
-        bbox (dict): 包含 min_x, min_y, max_x, max_y 的边界框信息
+        boxes (list): box字典列表
     
     Returns:
         tuple: (inside_indices, outside_indices, 
@@ -582,8 +555,10 @@ def get_box_node_indices(G, bbox):
         # 计算节点的中心点坐标
         point = calculate_center_points([node], 560)[0]
         
-        # 判断点是否在边界框内
-        if is_point_in_box(point, bbox):
+        # 判断点是否在任意box内
+        is_inside, _ = is_point_in_any_box(point, boxes)
+        
+        if is_inside:
             inside_indices.append(node)
             if G.nodes[node]['category'] == 'pos':
                 inside_pos_indices.append(node)
@@ -608,330 +583,548 @@ def normalize_distance(distance, prev_distance):
     return max(min(normalized, 1), -1)
 
 class BoxOptimizationEnv:
-    def __init__(self, G, bbox_initial, image_size=560, max_steps=100, step_size=14):
-        """初始化矩形框优化环境。
+    def __init__(self, G, bbox_initial=None, image_size=560, max_steps=100, step_size=14):
+        """初始化多box优化环境
         
         Args:
             G (nx.Graph): 图结构
-            bbox_initial (dict): 包含 min_x, min_y, max_x, max_y 的初始边界框
+            bbox_initial (list): 初始box列表，每个元素为dict包含min_x,min_y,max_x,max_y
             image_size (int): 图像大小
             max_steps (int): 最大步数
-            step_size (int): 移动步长（像素）
+            step_size (int): 移动步长
         """
         self.original_G = G.copy()
         self.G = G.copy()
         self.image_size = image_size
         self.step_size = step_size
+        self.fine_step_size = self.step_size  # 修改移动步长为14
+        self.similarity_threshold = 0.8  # 相似度阈值，用于判断是否合并box
+        self.min_box_size = 56  # 最小box尺寸，防止box过小
         self.max_steps = max_steps
-        self.bbox_initial = bbox_initial
+        self.bbox_initial = bbox_initial if bbox_initial else []  # 存储初始box配置
+        self.boxes = self.bbox_initial.copy()  # 当前box配置
         self.steps = 0
-        self.features = None  # 存储特征
+        self.features = None  # 初始化特征
         
-        # 初始化边界框，如果没有提供则创建默认边界框
-        if bbox_initial is None:
-            # 默认边界框为图像中心的1/4大小
-            center = image_size // 2
-            size = image_size // 4
-            self.bbox = {
-                'min_x': center - size // 2,
-                'min_y': center - size // 2,
-                'max_x': center + size // 2,
-                'max_y': center + size // 2
-            }
-        else:
-            # 直接使用传入的字典
-            self.bbox = bbox_initial
-        
-        # 获取初始节点索引
-        self.update_node_indices()
-
-    def calculate_feature_distances(self):
-        """
-        计算特征距离，返回框内外节点与groundtruth的距离以及框内外节点间的距离
-        
-        Returns:
-            tuple: (inside_gt_distance, outside_gt_distance, feature_distance)
-                  如果无法计算则返回(1.0, 0.0, 0.0)
-        """
-        # 检查是否有有效的特征和节点
-        if (self.features is None or 
-            not self.inside_indices or 
-            not self.outside_indices):
-            return 1.0, 0.0, 0.0
-
-        # 将索引转换为tensor
-        inside_indices = torch.tensor(self.inside_indices, dtype=torch.long)
-        outside_indices = torch.tensor(self.outside_indices, dtype=torch.long)
-
-        # 获取特征
-        inside_features = self.features[1][inside_indices]  # [N, D]
-        outside_features = self.features[1][outside_indices]  # [M, D]
-        gt_features = self.features[0]  # groundtruth特征
-
-        # 计算平均特征向量
-        inside_mean = torch.mean(inside_features, dim=0)  # [D]
-        outside_mean = torch.mean(outside_features, dim=0)  # [D]
-        gt_mean = torch.mean(gt_features, dim=0)  # [D]
-
-        # 计算距离
-        inside_gt_distance = torch.norm(inside_mean - gt_mean).item()
-        outside_gt_distance = torch.norm(outside_mean - gt_mean).item()
-        feature_distance = torch.norm(inside_mean - outside_mean).item()
-
-        return inside_gt_distance, outside_gt_distance, feature_distance
-    
-    def update_node_indices(self):
-        """更新节点索引"""
-        (self.inside_indices, self.outside_indices,
-         self.inside_pos_indices, self.outside_pos_indices,
-         self.inside_neg_indices, self.outside_neg_indices) = get_box_node_indices(self.G, self.bbox)
+        # 记录上一状态的指标
+        self.previous_inner_similarities = {i: 0 for i in range(len(self.boxes))}
+        self.previous_outer_differences = {i: 0 for i in range(len(self.boxes))}
+        self.previous_feature_distances = {i: {'inner': 0, 'cross': 0} for i in range(len(self.boxes))}
     
     def reset(self):
         """重置环境"""
-        # 重置图结构
         self.G = self.original_G.copy()
-        # 重置边界框到初始状态
-        self.bbox = self.bbox_initial
+        self.boxes = [box.copy() for box in self.bbox_initial]  # 深拷贝初始box配置
         self.steps = 0
-        self.update_node_indices()
-        self.previous_pos_ratio_in_box = self.calculate_pos_ratio_in_box()
-        self.previous_neg_ratio_out_box = self.calculate_neg_ratio_out_box()
-        self.previous_inside_feature_distance, self.previous_outside_feature_distance, self.previous_feature_distance = self.calculate_feature_distances()
+        self.previous_inner_similarities = {i: 0 for i in range(len(self.boxes))}
+        self.previous_outer_differences = {i: 0 for i in range(len(self.boxes))}
+        self.previous_feature_distances = {i: {'inner': 0, 'cross': 0} for i in range(len(self.boxes))}
         return self.get_state()
-    
+
     def get_state(self):
         """获取当前状态"""
-        return (self.G, self.bbox)
-    
-    def calculate_pos_ratio_in_box(self):
-        """计算框内正样本节点比例"""
-        pos_nodes = [node for node, data in self.G.nodes(data=True) if data['category'] == 'pos']
-        if not pos_nodes:
-            return 0
-        return len(self.inside_pos_indices) / len(pos_nodes)
-    
-    def calculate_neg_ratio_out_box(self):
-        """计算框外负样本节点比例"""
-        neg_nodes = [node for node, data in self.G.nodes(data=True) if data['category'] == 'neg']
-        if not neg_nodes:
-            return 0
-        return len(self.outside_neg_indices) / len(neg_nodes)
-    
-    def step(self, action):
-        """执行动作
+        return (self.G, self.boxes)
+
+    def set_features(self, features):
+        """设置特征"""
+        self.features = features
+
+    def calculate_similarity(self, features):
+        """计算特征之间的余弦相似度
         
-        动作空间:
-        - 'move_up': 向上移动边界框
-        - 'move_down': 向下移动边界框
-        - 'move_left': 向左移动边界框
-        - 'move_right': 向右移动边界框
-        - 'increase_width': 增加边界框宽度
-        - 'decrease_width': 减少边界框宽度
-        - 'increase_height': 增加边界框高度
-        - 'decrease_height': 减少边界框高度
+        Args:
+            features (torch.Tensor): 特征向量张量
+            
+        Returns:
+            float: 平均相似度
         """
-        # 保存旧的边界框
-        old_bbox = self.bbox.copy()
+        if features is None or features.shape[0] < 2:
+            return 0
+            
+        # 特征标准化
+        normalized_features = torch.nn.functional.normalize(features, p=2, dim=1)
         
-        # 根据动作更新边界框
-        if action == "move_up":
-            self.bbox['min_y'] = max(0, self.bbox['min_y'] - self.step_size)
-            self.bbox['max_y'] = max(self.step_size, self.bbox['max_y'] - self.step_size)
-        elif action == "move_down":
-            self.bbox['min_y'] = min(self.image_size - self.step_size, self.bbox['min_y'] + self.step_size)
-            self.bbox['max_y'] = min(self.image_size, self.bbox['max_y'] + self.step_size)
-        elif action == "move_left":
-            self.bbox['min_x'] = max(0, self.bbox['min_x'] - self.step_size)
-            self.bbox['max_x'] = max(self.step_size, self.bbox['max_x'] - self.step_size)
-        elif action == "move_right":
-            self.bbox['min_x'] = min(self.image_size - self.step_size, self.bbox['min_x'] + self.step_size)
-            self.bbox['max_x'] = min(self.image_size, self.bbox['max_x'] + self.step_size)
-        elif action == "increase_width":
-            # 增加宽度，左右两边各扩展step_size
-            self.bbox['min_x'] = max(0, self.bbox['min_x'] - self.step_size)
-            self.bbox['max_x'] = min(self.image_size, self.bbox['max_x'] + self.step_size)
-        elif action == "decrease_width":
-            # 确保边界框宽度不小于step_size
-            if self.bbox['max_x'] - self.bbox['min_x'] > self.step_size*2:
-                self.bbox['min_x'] += self.step_size
-                self.bbox['max_x'] -= self.step_size
-        elif action == "increase_height":
-            # 增加高度，上下两边各扩展step_size
-            self.bbox['min_y'] = max(0, self.bbox['min_y'] - self.step_size)
-            self.bbox['max_y'] = min(self.image_size, self.bbox['max_y'] + self.step_size)
-        elif action == "decrease_height":
-            # 确保边界框高度不小于step_size
-            if self.bbox['max_y'] - self.bbox['min_y'] > self.step_size*2:
-                self.bbox['min_y'] += self.step_size
-                self.bbox['max_y'] -= self.step_size
+        # 计算余弦相似度
+        similarities = torch.mm(normalized_features, normalized_features.t())
         
-        print(self.bbox)
-        # 更新节点索引
-        self.update_node_indices()
+        # 移除自身相似度
+        mask = torch.eye(similarities.shape[0], device=similarities.device)
+        similarities = similarities * (1 - mask)
         
-        # 计算奖励
-        reward = self.calculate_reward()
-        print(reward)
+        # 计算平均相似度
+        mean_similarity = similarities.sum() / (similarities.shape[0] * (similarities.shape[0] - 1))
         
-        # 如果奖励为负，撤销操作
+        return mean_similarity.item()
+
+    def get_box_features(self, box_idx):
+        """获取指定box内的特征
+        基于patch位置计算box内的特征,而不是基于节点位置
+        """
+        if self.features is None:
+            return None
+        
+        box = self.boxes[box_idx]
+        patch_size = 14  # DINO特征的patch大小
+        
+        # 计算box覆盖的patch范围
+        start_row = box['min_y'] // patch_size
+        end_row = (box['max_y'] + patch_size - 1) // patch_size
+        start_col = box['min_x'] // patch_size
+        end_col = (box['max_x'] + patch_size - 1) // patch_size
+        
+        # 获取所有在box内的patch索引
+        patch_indices = []
+        for row in range(start_row, end_row):
+            for col in range(start_col, end_col):
+                # 计算patch的中心点
+                center_x = col * patch_size + patch_size // 2
+                center_y = row * patch_size + patch_size // 2
+                
+                # 检查patch中心点是否在box内
+                if (box['min_x'] <= center_x <= box['max_x'] and 
+                    box['min_y'] <= center_y <= box['max_y']):
+                    # 将2D索引转换为1D索引
+                    index = row * (self.image_size // patch_size) + col
+                    patch_indices.append(index)
+        
+        # 如果没有找到有效的patch,返回None
+        if not patch_indices:
+            return None
+            
+        # 获取patch的特征
+        patch_features = self.features[1][patch_indices]
+        
+        # 在函数末尾添加特征标准化
+        if patch_features is not None:
+            # 标准化特征
+            patch_features = torch.nn.functional.normalize(patch_features, p=2, dim=1)
+        return patch_features
+
+    def get_box_features_distances(self, box_idx):
+        """计算指定box内外patch特征的距离"""
+        # 获取box内的patch特征
+        box_features = self.get_box_features(box_idx)
+        if box_features is None or len(box_features) < 2:
+            return None, None
+            
+        # 获取box外的patch特征
+        all_indices = range(self.features[1].shape[0])
+        box = self.boxes[box_idx]
+        patch_size = 14
+        
+        outside_indices = []
+        for idx in all_indices:
+            # 计算patch中心点坐标
+            row = idx // (self.image_size // patch_size)
+            col = idx % (self.image_size // patch_size)
+            center_x = col * patch_size + patch_size // 2
+            center_y = row * patch_size + patch_size // 2
+            
+            # 如果patch中心点不在box内，则添加到outside_indices
+            if not (box['min_x'] <= center_x <= box['max_x'] and 
+                   box['min_y'] <= center_y <= box['max_y']):
+                outside_indices.append(idx)
+        
+        if not outside_indices:
+            return None, None
+            
+        outside_features = self.features[1][outside_indices]
+        
+        # 计算box内patch之间的特征距离
+        inner_distances = torch.cdist(box_features, box_features)
+        # 计算box内外patch之间的特征距离
+        cross_distances = torch.cdist(box_features, outside_features)
+        
+        return normalize_distances(inner_distances), normalize_distances(cross_distances)
+
+    def calculate_box_reward(self, box_idx):
+        """重新设计box的奖励计算，基于patch特征相似度"""
+        inner_distances, cross_distances = self.get_box_features_distances(box_idx)
+        if inner_distances is None or cross_distances is None:
+            return -0.1
+        
+        # 计算box内patch的平均特征距离（衡量内部一致性）
+        inner_mean = torch.mean(inner_distances).item()
+        # 计算box内外patch的平均特征距离（衡量区分度）
+        cross_mean = torch.mean(cross_distances).item()
+        
+        # 归一化距离变化
+        inner_change = normalize_distance(
+            inner_mean, 
+            self.previous_feature_distances[box_idx]['inner'])
+        cross_change = normalize_distance(
+            cross_mean,
+            self.previous_feature_distances[box_idx]['cross'])
+        
+        # 更新历史距离
+        self.previous_feature_distances[box_idx]['inner'] = inner_mean
+        self.previous_feature_distances[box_idx]['cross'] = cross_mean
+        
+        # 计算奖励：鼓励box内patch相似（inner_distance小），box内外patch差异大（cross_distance大）
+        reward = 2.0 * (-inner_change) + 1.5 * cross_change
+        
+        return reward
+
+    def get_lowest_cohesion_box(self):
+        """获取内聚程度最低的box索引"""
+        lowest_cohesion = float('inf')
+        target_box_idx = 0
+        
+        for box_idx in range(len(self.boxes)):
+            feature_pos, _ = self.get_box_features_distances(box_idx)
+            if feature_pos is not None:
+                cohesion = torch.mean(feature_pos).item()
+                if cohesion < lowest_cohesion:
+                    lowest_cohesion = cohesion
+                    target_box_idx = box_idx
+                    
+        return target_box_idx
+
+    def get_edge_boxes(self):
+        """获取边缘box的索引列表"""
+        edge_boxes = []
+        box_centers = []
+        
+        # 计算所有box的中心点
+        for box in self.boxes:
+            center_x = (box['min_x'] + box['max_x']) / 2
+            center_y = (box['min_y'] + box['max_y']) / 2
+            box_centers.append((center_x, center_y))
+        
+        # 如果只有一个box，直接返回
+        if len(self.boxes) == 1:
+            return [0]
+            
+        # 计算每个box到其他box的平均距离
+        for i, center1 in enumerate(box_centers):
+            distances = []
+            for j, center2 in enumerate(box_centers):
+                if i != j:
+                    dist = ((center1[0] - center2[0])**2 + (center1[1] - center2[1])**2)**0.5
+                    distances.append(dist)
+            # 如果当前box到其他box的平均距离较大，认为是边缘box
+            avg_dist = sum(distances) / len(distances)
+            if avg_dist > np.mean([d for d in distances if d > 0]):
+                edge_boxes.append(i)
+        
+        return edge_boxes if edge_boxes else [0]  # 如果没有找到边缘box，返回第一个box
+
+    def check_box_adjacency(self, box_idx):
+        """检查box是否有空闲边（没有邻接其他box的边）"""
+        box = self.boxes[box_idx]
+        edges = {
+            'up': False, 'down': False,
+            'left': False, 'right': False
+        }
+        
+        for i, other_box in enumerate(self.boxes):
+            if i == box_idx:
+                continue
+                
+            # 检查上边
+            if (abs(box['min_y'] - other_box['max_y']) <= self.step_size and
+                max(box['min_x'], other_box['min_x']) < min(box['max_x'], other_box['max_x'])):
+                edges['up'] = True
+                
+            # 检查下边
+            if (abs(box['max_y'] - other_box['min_y']) <= self.step_size and
+                max(box['min_x'], other_box['min_x']) < min(box['max_x'], other_box['max_x'])):
+                edges['down'] = True
+                
+            # 检查左边
+            if (abs(box['min_x'] - other_box['max_x']) <= self.step_size and
+                max(box['min_y'], other_box['min_y']) < min(box['max_y'], other_box['max_y'])):
+                edges['left'] = True
+                
+            # 检查右边
+            if (abs(box['max_x'] - other_box['min_x']) <= self.step_size and
+                max(box['min_y'], other_box['min_y']) < min(box['max_y'], other_box['max_y'])):
+                edges['right'] = True
+                
+        return {k: not v for k, v in edges.items()}  # 返回空闲边
+
+    def find_mergeable_boxes(self, box_idx):
+        """查找可以合并的相邻box"""
+        box = self.boxes[box_idx]
+        mergeable = []
+        
+        for i, other_box in enumerate(self.boxes):
+            if i == box_idx:
+                continue
+                
+            # 检查是否相邻
+            is_adjacent = (
+                (abs(box['min_y'] - other_box['max_y']) <= self.step_size or
+                 abs(box['max_y'] - other_box['min_y']) <= self.step_size) and
+                max(box['min_x'], other_box['min_x']) < min(box['max_x'], other_box['max_x'])
+            ) or (
+                (abs(box['min_x'] - other_box['max_x']) <= self.step_size or
+                 abs(box['max_x'] - other_box['min_x']) <= self.step_size) and
+                max(box['min_y'], other_box['min_y']) < min(box['max_y'], other_box['max_y'])
+            )
+            
+            if is_adjacent:
+                # 计算特征相似度
+                box_features = self.get_box_features(box_idx)
+                other_features = self.get_box_features(i)
+                if box_features is not None and other_features is not None:
+                    similarity = self.calculate_box_similarity(box_features, other_features)
+                    if similarity > self.similarity_threshold:
+                        mergeable.append((i, similarity))
+        
+        return sorted(mergeable, key=lambda x: x[1], reverse=True)
+
+    def calculate_box_similarity(self, features1, features2):
+        """计算两个box的特征相似度"""
+        if features1 is None or features2 is None:
+            return 0
+            
+        # 计算特征的平均值
+        mean_feature1 = torch.mean(features1, dim=0, keepdim=True)
+        mean_feature2 = torch.mean(features2, dim=0, keepdim=True)
+        
+        # 计算余弦相似度
+        similarity = torch.nn.functional.cosine_similarity(mean_feature1, mean_feature2)
+        return similarity.item()
+
+    def merge_boxes(self, box1_idx, box2_idx):
+        """合并两个box"""
+        box1 = self.boxes[box1_idx]
+        box2 = self.boxes[box2_idx]
+        
+        # 创建新的合并box
+        merged_box = {
+            'min_x': min(box1['min_x'], box2['min_x']),
+            'min_y': min(box1['min_y'], box2['min_y']),
+            'max_x': max(box1['max_x'], box2['max_x']),
+            'max_y': max(box1['max_y'], box2['max_y'])
+        }
+        
+        # 移除旧box并添加新box
+        self.boxes.pop(max(box1_idx, box2_idx))
+        self.boxes.pop(min(box1_idx, box2_idx))
+        self.boxes.append(merged_box)
+        
+        return len(self.boxes) - 1  # 返回新box的索引
+
+    def step(self, action):
+        box_idx, operation, params = action
+        if box_idx >= len(self.boxes):
+            return self.get_state(), 0, True
+            
+        old_box = self.boxes[box_idx].copy()
+        old_boxes = self.boxes.copy()
+        
+        reward = 0
+        if operation == "merge" and params is not None:
+            # 执行合并操作
+            target_idx = params
+            new_box_idx = self.merge_boxes(box_idx, target_idx)
+            reward = self.calculate_box_reward(new_box_idx)
+        else:
+            # 检查是否可以移动
+            free_edges = self.check_box_adjacency(box_idx)
+            if operation in free_edges and free_edges[operation]:
+                # 执行移动操作
+                if operation == "move_up":
+                    self.boxes[box_idx]['min_y'] = max(0, self.boxes[box_idx]['min_y'] - self.step_size)
+                    self.boxes[box_idx]['max_y'] = max(self.step_size, self.boxes[box_idx]['max_y'] - self.step_size)
+                elif operation == "move_down":
+                    self.boxes[box_idx]['min_y'] = min(self.image_size - self.step_size, self.boxes[box_idx]['min_y'] + self.step_size)
+                    self.boxes[box_idx]['max_y'] = min(self.image_size, self.boxes[box_idx]['max_y'] + self.step_size)
+                elif operation == "move_left":
+                    self.boxes[box_idx]['min_x'] = max(0, self.boxes[box_idx]['min_x'] - self.step_size)
+                    self.boxes[box_idx]['max_x'] = max(self.step_size, self.boxes[box_idx]['max_x'] - self.step_size)
+                elif operation == "move_right":
+                    self.boxes[box_idx]['min_x'] = min(self.image_size - self.step_size, self.boxes[box_idx]['min_x'] + self.step_size)
+                    self.boxes[box_idx]['max_x'] = min(self.image_size, self.boxes[box_idx]['max_x'] + self.step_size)
+                
+                reward = self.calculate_box_reward(box_idx)
+        
+        # 如果奖励为负，回滚操作
         if reward < 0:
-            # print("box action reward < 0 , revert action")
-            self.bbox = old_bbox
-            self.update_node_indices()
-            reward = self.calculate_reward()
+            self.boxes = old_boxes
+            reward = 0
         else:
             self.steps += 1
         
-        done = self.is_done()
+        done = self.steps >= self.max_steps
         return self.get_state(), reward, done
-    
-    def calculate_reward(self):
-        """计算奖励"""
-        # 计算当前状态的指标
-        current_pos_ratio_in_box = self.calculate_pos_ratio_in_box()
-        current_neg_ratio_out_box = self.calculate_neg_ratio_out_box()
+
+    def calculate_pos_ratio_in_box(self):
+        """计算所有box内正样本比例"""
+        pos_nodes = [n for n, d in self.G.nodes(data=True) if d['category'] == 'pos']
+        if not pos_nodes:
+            return 0
         
-        # 计算奖励
-        reward = 0
+        inside_count = 0
+        for node in pos_nodes:
+            point = calculate_center_points([node], self.image_size)[0]
+            is_inside, _ = is_point_in_any_box(point, self.boxes)
+            if is_inside:
+                inside_count += 1
         
-        # 正样本框内比例奖励
-        pos_ratio_diff = current_pos_ratio_in_box - self.previous_pos_ratio_in_box
-        reward += 2 * max(min(pos_ratio_diff, 1), -1)
-
-        # 负样本框外比例奖励
-        neg_ratio_diff = current_neg_ratio_out_box - self.previous_neg_ratio_out_box
-        reward += 1 * max(min(neg_ratio_diff, 1), -1)
-
-        # 计算特征距离奖励
-        if self.features is not None and len(self.inside_indices) > 0 and len(self.outside_indices) > 0:           
-            # 计算当前特征距离
-            inside_gt_distance, outside_gt_distance, inout_feature_distance = self.calculate_feature_distances()
-
-            # 归一化并计算奖励
-            inside_distance_norm = normalize_distance(inside_gt_distance, self.previous_inside_feature_distance)
-            outside_distance_norm = normalize_distance(outside_gt_distance, self.previous_outside_feature_distance)
-            feature_diff_norm = normalize_distance(inout_feature_distance, self.previous_feature_distance)
-
-            # 框内特征与gt距离减小时给予奖励
-            reward += 2 * inside_distance_norm
-
-            # 框外特征与gt距离增大时给予奖励
-            reward += 1 * outside_distance_norm
-
-            # 框内外特征差异增大时给予奖励
-            reward += 2 * feature_diff_norm
-            
-            # 更新上一状态的指标
-            self.previous_pos_ratio_in_box = self.calculate_pos_ratio_in_box()
-            self.previous_neg_ratio_out_box = self.calculate_neg_ratio_out_box()
-            self.previous_inside_feature_distance = inside_gt_distance
-            self.previous_outside_feature_distance = outside_gt_distance
-            self.previous_feature_distance = inout_feature_distance
-
-        return reward
+        return inside_count / len(pos_nodes)
     
-    def is_done(self):
-        """检查是否完成"""
-        return self.steps >= self.max_steps
+    def calculate_neg_ratio_out_box(self):
+        """计算所有box外负样本比例"""
+        neg_nodes = [n for n, d in self.G.nodes(data=True) if d['category'] == 'neg']
+        if not neg_nodes:
+            return 0
+        
+        outside_count = 0
+        for node in neg_nodes:
+            point = calculate_center_points([node], self.image_size)[0]
+            is_inside, _ = is_point_in_any_box(point, self.boxes)
+            if not is_inside:
+                outside_count += 1
+        
+        return outside_count / len(neg_nodes)
 
 class BoxAgent:
-    def __init__(self, env, alpha=0.1, gamma=0.9, epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.995, memory_size=10000, batch_size=64):
-        """初始化矩形框智能体
-        
-        Args:
-            env: 环境
-            alpha: 学习率
-            gamma: 折扣因子
-            epsilon_start: 初始探索率
-            epsilon_end: 最终探索率
-            epsilon_decay: 探索率衰减
-            memory_size: 记忆大小
-            batch_size: 批量大小
-        """
+    def __init__(self, env, alpha=0.1, gamma=0.9, epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.995):
+        """初始化box智能体"""
         self.env = env
         self.alpha = alpha
         self.gamma = gamma
-        self.epsilon = epsilon_start
-        self.epsilon_start = epsilon_start
+        self.epsilon_start = epsilon_start  # 存储初始epsilon值
         self.epsilon_end = epsilon_end
         self.epsilon_decay = epsilon_decay
+        self.epsilon = epsilon_start
         self.q_table = defaultdict(float)
-        self.memory = deque(maxlen=memory_size)
-        self.best_memory = deque(maxlen=memory_size)
-        self.batch_size = batch_size
-        self.best_reward = -float('inf')
-        self.best_q_table = None
-        self.actions = ["move_up", "move_down", "move_left", "move_right", 
-                        "increase_width", "decrease_width", 
-                        "increase_height", "decrease_height"]
-    
+        
+        # 添加其他必要的属性
+        self.best_reward = -float('inf')  # 用于记录最佳奖励
+        self.best_reward_save = -float('inf')
+        self.memory = deque(maxlen=10000)  # 添加经验回放内存
+        self.best_memory = deque(maxlen=10000)  # 添加最佳经验内存
+        self.batch_size = 64  # 添加批量大小
+        
+        # 修改动作空间
+        self.actions = ["move_up", "move_down", "move_left", "move_right", "merge"]
+
     def update_epsilon(self):
         """更新探索率"""
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
-    
+
+    def get_extreme_boxes(self):
+        """获取具有极值坐标的box索引"""
+        if not self.env.boxes:
+            return []
+        
+        min_x = min(box['min_x'] for box in self.env.boxes)
+        max_x = max(box['max_x'] for box in self.env.boxes)
+        min_y = min(box['min_y'] for box in self.env.boxes)
+        max_y = max(box['max_y'] for box in self.env.boxes)
+        
+        extreme_indices = []
+        for i, box in enumerate(self.env.boxes):
+            if (box['min_x'] == min_x or box['max_x'] == max_x or 
+                box['min_y'] == min_y or box['max_y'] == max_y):
+                extreme_indices.append(i)
+        return extreme_indices
+
     def get_action(self, state):
-        """获取动作
+        """根据不同概率选择动作"""
+        prob = random.random()
         
-        Args:
-            state: 环境状态
-        
-        Returns:
-            选择的动作
-        """
-        # 使用ε-贪婪策略选择动作
         if random.random() < self.epsilon:
-            return random.choice(self.actions)
+            # 随机探索
+            if prob < 0.4:  # 40%概率选择极值box
+                potential_boxes = self.get_extreme_boxes()
+                if potential_boxes:
+                    box_idx = random.choice(potential_boxes)
+                    operation = random.choice(self.actions[:-1])  # 只选择移动操作
+                    return (box_idx, operation, None)
+                    
+            elif prob < 0.7:  # 30%概率选择有空闲边的box
+                for box_idx in range(len(self.env.boxes)):
+                    free_edges = self.env.check_box_adjacency(box_idx)
+                    if any(free_edges.values()):
+                        # 随机选择一个可用的移动方向
+                        available_moves = [f"move_{direction}" for direction, is_free in free_edges.items() if is_free]
+                        if available_moves:
+                            return (box_idx, random.choice(available_moves), None)
+                            
+            else:  # 30%概率选择可合并的box
+                for box_idx in range(len(self.env.boxes)):
+                    mergeable = self.env.find_mergeable_boxes(box_idx)
+                    if mergeable:
+                        target_idx, _ = mergeable[0]  # 选择相似度最高的box合并
+                        return (box_idx, "merge", target_idx)
+            
+            # 如果上述策略都无法执行，随机选择一个动作
+            box_idx = random.randint(0, len(self.env.boxes) - 1)
+            operation = random.choice(self.actions[:-1])
+            return (box_idx, operation, None)
+            
         else:
-            # 找到具有最高Q值的动作
+            # 利用Q表进行选择
             state_hash = self._get_state_hash(state)
-            q_values = {action: self.q_table.get((state_hash, action), 0) for action in self.actions}
-            max_q = max(q_values.values())
-            # 如果有多个具有最大Q值的动作，随机选择一个
-            best_actions = [action for action, q in q_values.items() if q == max_q]
-            return random.choice(best_actions)
-    
+            best_value = float('-inf')
+            best_action = None
+            
+            # 40%概率考虑极值box
+            if prob < 0.4:
+                potential_boxes = self.get_extreme_boxes()
+                for box_idx in potential_boxes:
+                    for operation in self.actions[:-1]:
+                        action = (box_idx, operation, None)
+                        value = self.q_table.get((state_hash, action), 0)
+                        if value > best_value:
+                            best_value = value
+                            best_action = action
+                            
+            # 30%概率考虑有空闲边的box
+            elif prob < 0.7:
+                for box_idx in range(len(self.env.boxes)):
+                    free_edges = self.env.check_box_adjacency(box_idx)
+                    for direction, is_free in free_edges.items():
+                        if is_free:
+                            action = (box_idx, f"move_{direction}", None)
+                            value = self.q_table.get((state_hash, action), 0)
+                            if value > best_value:
+                                best_value = value
+                                best_action = action
+                                
+            # 30%概率考虑合并操作
+            else:
+                for box_idx in range(len(self.env.boxes)):
+                    mergeable = self.env.find_mergeable_boxes(box_idx)
+                    for target_idx, similarity in mergeable:
+                        action = (box_idx, "merge", target_idx)
+                        value = self.q_table.get((state_hash, action), 0) + similarity
+                        if value > best_value:
+                            best_value = value
+                            best_action = action
+            
+            return best_action if best_action else (0, "move_up", None)
+
     def _get_state_hash(self, state):
-        """将状态转换为哈希值
-        
-        Args:
-            state: 环境状态
-        
-        Returns:
-            状态的哈希值
-        """
-        _, bbox = state
-        # 使用边界框坐标和比率信息作为状态特征
-        bbox_tuple = (
-            bbox['min_x'], bbox['min_y'], 
-            bbox['max_x'], bbox['max_y'],
-            round(self.env.previous_pos_ratio_in_box, 4),
-            round(self.env.previous_neg_ratio_out_box, 4),
-            round(self.env.previous_inside_feature_distance, 4),
-            round(self.env.previous_outside_feature_distance, 4),
-            round(self.env.previous_feature_distance, 4)
+        """将状态转换为哈希值"""
+        _, boxes = state
+        box_tuples = tuple(
+            (box['min_x'], box['min_y'], box['max_x'], box['max_y'])
+            for box in boxes
         )
-        return hash(bbox_tuple)
-    
+        return hash(box_tuples)
+
     def update_q_table(self, state, action, reward, next_state):
-        """更新Q表
-        
-        Args:
-            state: 当前状态
-            action: 执行的动作
-            reward: 获得的奖励
-            next_state: 下一个状态
-        """
+        """更新Q表"""
         state_hash = self._get_state_hash(state)
         next_state_hash = self._get_state_hash(next_state)
         
-        # 计算下一个状态的最大Q值
-        max_next_q = max([self.q_table.get((next_state_hash, a), 0) for a in self.actions])
+        max_next_q = max(
+            [self.q_table.get((next_state_hash, next_action), 0) 
+             for next_action in [(i, op, None) 
+                               for i in range(len(self.env.boxes)) 
+                               for op in self.actions]],
+            default=0)
         
-        # 更新Q值
         old_q = self.q_table.get((state_hash, action), 0)
         new_q = old_q + self.alpha * (reward + self.gamma * max_next_q - old_q)
         self.q_table[(state_hash, action)] = new_q
-    
+        
     def replay(self):
         """从记忆中回放经验"""
         if len(self.memory) < self.batch_size:
@@ -940,7 +1133,7 @@ class BoxAgent:
         batch = random.sample(self.memory, self.batch_size)
         for state, action, reward, next_state in batch:
             self.update_q_table(state, action, reward, next_state)
-    
+
     def replay_best(self):
         """从最佳记忆中回放经验"""
         if len(self.best_memory) < self.batch_size:
@@ -965,12 +1158,19 @@ class MultiAgentEnv:
         self.box_env = BoxOptimizationEnv(G, bbox_initial, image_size, max_steps, step_size)
         self.steps = 0
         self.max_steps = max_steps
+        self.features = None  # 添加特征存储
         
     def reset(self):
         """重置环境"""
         node_state = self.node_env.reset()
         box_state = self.box_env.reset()
         self.steps = 0
+        
+        # 确保特征在重置时也被正确设置
+        if hasattr(self.node_env, 'features'):
+            self.features = self.node_env.features
+            self.box_env.features = self.features
+            
         return {"node": node_state, "box": box_state}
     
     def step(self, action_dict):
@@ -988,13 +1188,16 @@ class MultiAgentEnv:
         # 执行节点智能体的动作
         if "node" in action_dict:
             node_next_state, node_reward, node_done = self.node_env.step(action_dict["node"])
+            # 同步图结构和特征到box环境
+            self.box_env.G = self.node_env.G.copy()
+            if hasattr(self.node_env, 'features'):
+                self.features = self.node_env.features
+                self.box_env.features = self.features  # 确保box环境也获得最新特征
         else:
             node_next_state, node_reward, node_done = self.node_env.get_state(), 0, False
         
         # 执行边界框智能体的动作
         if "box" in action_dict:
-            # 边界框环境使用节点环境的图结构
-            self.box_env.G = self.node_env.G.copy() # 同步图结构
             box_next_state, box_reward, box_done = self.box_env.step(action_dict["box"])
         else:
             box_next_state, box_reward, box_done = self.box_env.get_state(), 0, False
@@ -1002,9 +1205,8 @@ class MultiAgentEnv:
         # 更新步数
         self.steps += 1
         
-        print(f"node_reward: {node_reward}, box_reward: {box_reward}")
-        # 合并奖励和完成状态
-        reward = node_reward + box_reward
+        # 组合奖励，给予不同权重
+        reward = 0.6 * node_reward + 0.4 * box_reward
         done = node_done or box_done or self.steps >= self.max_steps
         
         return {"node": node_next_state, "box": box_next_state}, reward, done

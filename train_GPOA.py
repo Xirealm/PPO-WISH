@@ -1,12 +1,9 @@
 import os
 import torch
 import numpy as np
-from PIL import Image
-import cv2
 import networkx as nx
-import pandas as pd
 import random
-from collections import defaultdict, deque
+from collections import deque
 import time
 from datetime import timedelta, datetime
 from utils import NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, BoxOptimizationEnv, calculate_distances, convert_to_edges, get_box_node_indices
@@ -61,6 +58,7 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         # 加载bbox数据
         with open(bbox_file, 'r') as f:
             bbox_data = json.load(f)
+            boxes = bbox_data['cluster_boxes']  # 使用聚类得到的多个box
             
         # 确保索引唯一
         positive_indices = torch.unique(positive_indices).to(device)
@@ -106,18 +104,19 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         # 获取列表格式的结果
         (inside_indices, outside_indices,
         inside_pos_indices, outside_pos_indices,
-        inside_neg_indices, outside_neg_indices) = get_box_node_indices(G, bbox_data)
+        inside_neg_indices, outside_neg_indices) = get_box_node_indices(G, boxes)
         
         print(f"Inside bbox - Pos: {len(inside_pos_indices)}, Neg: {len(inside_neg_indices)}")
         print(f"Outside bbox - Pos: {len(outside_pos_indices)}, Neg: {len(outside_neg_indices)}")
 
         # 初始化多智能体环境
-        multi_env = MultiAgentEnv(G, bbox_data, image_size, max_steps)
+        multi_env = MultiAgentEnv(G, boxes, image_size, max_steps)
         node_agent.env = multi_env.node_env
         box_agent.env = multi_env.box_env
         
-        # 设置特征信息
-        multi_env.box_env.features = features 
+        # 设置特征信息到两个环境中
+        multi_env.node_env.features = features
+        multi_env.box_env.features = features
         
         state = multi_env.reset()
         done = False
@@ -149,6 +148,9 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
                 node_agent.memory.append((state["node"], node_action, reward, next_state["node"]))
                 node_agent.update_q_table(state["node"], node_action, reward, next_state["node"])
                 node_agent.replay()
+                
+                # 同步特征
+                multi_env.box_env.features = multi_env.node_env.features
             else:  # 奇数步执行矩形框智能体动作
                 box_action = box_agent.get_action(state["box"])
                 action_dict = {"box": box_action}
@@ -192,6 +194,17 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         print(f"Node metrics - Final pos: {mean_feature_pos}, Final cross: {mean_feature_cross}")
         print(f"Box metrics - Pos ratio in box: {pos_ratio_in_box}, Neg ratio out box: {neg_ratio_out_box}")
 
+        # 打印box相关指标
+        print(f"Number of boxes: {len(multi_env.box_env.boxes)}")
+        for i, box in enumerate(multi_env.box_env.boxes):
+            box_features = multi_env.box_env.get_box_features(i)
+            if box_features is not None:
+                print(f"Box {i} features shape: {box_features.shape}")
+                inner_sim = multi_env.box_env.calculate_similarity(box_features)
+                print(f"Box {i} inner similarity: {inner_sim:.4f}")
+            else:
+                print(f"Box {i} is empty")
+
         # 计算并显示时间信息
         elapsed_time = time.time() - start_time
         estimated_total_time = elapsed_time * (episodes / (episode + 1))
@@ -227,16 +240,18 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         # 输出最终节点统计信息
         final_pos_count = len(multi_env.node_env.pos_nodes)
         final_neg_count = len(multi_env.node_env.neg_nodes)
-        final_bbox = multi_env.box_env.bbox
+        final_boxes = multi_env.box_env.boxes
         print(f"Episode {episode + 1}: Final positive nodes count: {final_pos_count}, Final negative nodes count: {final_neg_count}")
-        print(f"Final bounding box: {final_bbox}")
+        print(f"Final boxes count: {len(final_boxes)}")
+        for i, box in enumerate(final_boxes):
+            print(f"Final box {i}: {box}")
 
     return rewards
 
 def save_multi_agent_results(node_agent, box_agent, episode, reward, output_path, prefix):
     """保存多智能体训练结果"""
     node_state = node_agent.env.get_state()
-    box_state, bbox = box_agent.env.get_state()
+    box_state, boxes = box_agent.env.get_state()  # 修改这里，现在返回的是boxes列表
     
     pos_nodes = [node for node, data in node_state.nodes(data=True) if data['category'] == 'pos']
     neg_nodes = [node for node, data in node_state.nodes(data=True) if data['category'] == 'neg']
@@ -244,7 +259,10 @@ def save_multi_agent_results(node_agent, box_agent, episode, reward, output_path
     with open(f"{output_path}/{prefix}_rewards.txt", "a") as f:
         f.write(f"Episode {episode}: Reward: {reward}\n")
         f.write(f"Positive nodes: {len(pos_nodes)}, Negative nodes: {len(neg_nodes)}\n")
-        f.write(f"Bounding box: {bbox}\n\n")
+        f.write(f"Number of boxes: {len(boxes)}\n")
+        for i, box in enumerate(boxes):
+            f.write(f"Box {i}: {box}\n")
+        f.write("\n")
 
 def save_multi_agent_best_q_table(node_agent, box_agent, output_path):
     """保存最佳Q表"""
@@ -259,6 +277,17 @@ def save_multi_agent_best_model(node_agent, box_agent, output_path, filename):
         torch.save(node_agent.q_table, f)
     with open(f"{output_path}/box_{filename}", "wb") as f:
         torch.save(box_agent.q_table, f)
+        
+    # 保存最优Q表时同时也记录状态
+    state_info = {
+        'node_best_reward': node_agent.best_reward,
+        'box_best_reward': box_agent.best_reward,
+        'node_best_pos': node_agent.best_pos,
+        'node_best_cross': node_agent.best_cross
+    }
+    with open(f"{output_path}/best_state_info.json", 'w') as f:
+        json.dump(state_info, f)
+    
     print(f"Best multi-agent model saved with reward: {node_agent.best_reward}")
 
 def save_best_q_table(agent, output_path):
@@ -297,7 +326,7 @@ def main():
     rewards = train_multi_agent(
         node_agent, 
         box_agent, 
-        episodes=30, 
+        episodes=10,
         output_path=output_path, 
         base_dir=base_dir, 
         file_prefixes=file_prefixes, 
