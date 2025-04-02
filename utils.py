@@ -324,19 +324,19 @@ class NodeOptimizationEnv:
         reward = 0
 
         if mean_feature_pos < self.previous_feature_pos_mean:
-            reward += 3 * (self.previous_feature_pos_mean - mean_feature_pos)
+            reward += 5 * (self.previous_feature_pos_mean - mean_feature_pos)
         else:
-            reward -= 3 * (mean_feature_pos - self.previous_feature_pos_mean)
+            reward -= 5 * (mean_feature_pos - self.previous_feature_pos_mean)
 
         if mean_feature_cross > self.previous_feature_cross_mean:
-            reward += 3 * (mean_feature_cross - self.previous_feature_cross_mean)
+            reward += 5 * (mean_feature_cross - self.previous_feature_cross_mean)
         else:
-            reward -= 3 * (self.previous_feature_cross_mean - mean_feature_cross)
+            reward -= 5 * (self.previous_feature_cross_mean - mean_feature_cross)
 
         if mean_physical_pos > self.previous_physical_pos_mean:
-            reward += 3 * (mean_physical_pos - self.previous_physical_pos_mean)
+            reward += 5 * (mean_physical_pos - self.previous_physical_pos_mean)
         else:
-            reward -= 3 *(self.previous_physical_pos_mean - mean_physical_pos)
+            reward -= 5 *(self.previous_physical_pos_mean - mean_physical_pos)
 
         if mean_physical_neg > self.previous_physical_neg_mean:
             reward += 1 * (mean_physical_neg - self.previous_physical_neg_mean)
@@ -358,6 +358,51 @@ class NodeOptimizationEnv:
                 # add操作没有改善特征距离，给予较大惩罚
                 reward -= 5
 
+        # 初始化位置相关惩罚
+        position_penalty = 0
+        
+        # 针对恢复节点操作的位置惩罚
+        if operation == "restore_pos":
+            restored_nodes = [n for n, d in self.G.nodes(data=True) 
+                            if n not in self.original_G.nodes() and d['category'] == 'pos']
+            if restored_nodes:
+                last_restored = restored_nodes[-1]
+                point = calculate_center_points([last_restored], 560)[0]
+                in_any_box = False
+                
+                # 检查是否在任意box内
+                for box in self.boxes:
+                    if (box['min_x'] <= point[0] <= box['max_x'] and 
+                        box['min_y'] <= point[1] <= box['max_y']):
+                        in_any_box = True
+                        # 统计同一box内的正节点数量
+                        pos_count = sum(1 for n in self.G.nodes() 
+                                     if self.G.nodes[n]['category'] == 'pos' and
+                                     box['min_x'] <= calculate_center_points([n], 560)[0][0] <= box['max_x'] and
+                                     box['min_y'] <= calculate_center_points([n], 560)[0][1] <= box['max_y'])
+                        if pos_count > 2:
+                            position_penalty -= 5  # 同一box内正节点过多的惩罚
+                        break
+                
+                if not in_any_box:
+                    position_penalty -= 5  # box外部的惩罚
+                    
+        elif operation == "restore_neg":
+            restored_nodes = [n for n, d in self.G.nodes(data=True) 
+                            if n not in self.original_G.nodes() and d['category'] == 'neg']
+            if restored_nodes:
+                last_restored = restored_nodes[-1]
+                point = calculate_center_points([last_restored], 560)[0]
+                
+                # 检查是否在任意box内部
+                for box in self.boxes:
+                    if (box['min_x'] <= point[0] <= box['max_x'] and 
+                        box['min_y'] <= point[1] <= box['max_y']):
+                        position_penalty -= 5  # box内部的惩罚
+                        break
+
+        reward += position_penalty
+
         self.previous_pos_num = len(self.pos_nodes)
         self.previous_neg_num = len(self.neg_nodes)
         self.previous_feature_cross_mean = mean_feature_cross
@@ -373,7 +418,7 @@ class NodeOptimizationEnv:
         return self.steps >= self.max_steps
 
 class NodeAgent:
-    def __init__(self, env, alpha=0.1, gamma=0.9, epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.995, memory_size=10000, batch_size=64,reward_threshold=0.1):
+    def __init__(self, env:NodeOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.995, memory_size=10000, batch_size=64,reward_threshold=0.1):
         self.env = env
         self.alpha = alpha
         self.gamma = gamma
@@ -901,7 +946,7 @@ class BoxOptimizationEnv:
         return outside_count / len(neg_nodes)
 
 class BoxAgent:
-    def __init__(self, env, alpha=0.1, gamma=0.9, epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.995):
+    def __init__(self, env:BoxOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.995):
         """初始化box智能体"""
         self.env = env
         self.alpha = alpha
@@ -1132,7 +1177,7 @@ class MultiAgentEnv:
 
         # 检查是否达到最大步数
         if self.steps >= self.max_steps:
-            # 获取所有box内的负提示点
+            # 移除所有box内的负提示点
             neg_nodes_to_remove = []
             for node in self.node_env.G.nodes():
                 if self.node_env.G.nodes[node]['category'] == 'neg':
@@ -1143,13 +1188,32 @@ class MultiAgentEnv:
                             box['min_y'] <= point[1] <= box['max_y']):
                             neg_nodes_to_remove.append(node)
                             break
-            
-            # 移除这些负提示点
-            for node in neg_nodes_to_remove:
-                self.node_env.remove_node(node, "neg")
-                # 确保box环境的图也保持同步
-                if node in self.box_env.G.nodes():
-                    self.box_env.G.remove_node(node)
+
+            # 移除所有box外的正提示点
+            pos_nodes_to_remove = []
+            for node in self.node_env.G.nodes():
+                if self.node_env.G.nodes[node]['category'] == 'pos':
+                    point = calculate_center_points([node], self.box_env.image_size)[0]
+                    # 检查点是否在所有box外部
+                    outside_all_boxes = True
+                    for box in self.box_env.boxes:
+                        if (box['min_x'] <= point[0] <= box['max_x'] and
+                            box['min_y'] <= point[1] <= box['max_y']):
+                            outside_all_boxes = False
+                            break
+                    if outside_all_boxes:
+                        pos_nodes_to_remove.append(node)
+
+            # 移除这些节点
+            for node in neg_nodes_to_remove + pos_nodes_to_remove:
+                if node in self.node_env.G.nodes():
+                    if self.node_env.G.nodes[node]['category'] == 'neg':
+                        self.node_env.remove_node(node, "neg")
+                    else:
+                        self.node_env.remove_node(node, "pos")
+                    # 确保box环境的图也保持同步
+                    if node in self.box_env.G.nodes():
+                        self.box_env.G.remove_node(node)
             
             # 在移除节点后更新状态
             node_next_state = self.node_env.get_state()
