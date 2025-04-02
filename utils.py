@@ -106,6 +106,96 @@ def average_edge_size(graph, weight_name):
     average_weight = total_weight / edge_count
     return average_weight
 
+def show_mask(mask,ax, random_color=False):
+    color = np.array([50/255, 120/255, 255/255, 0.8])
+    h, w = mask.shape[-2:]
+    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    ax.imshow(mask_image)
+
+def is_point_in_box(point, bbox):
+    """
+    判断点是否在边界框内
+    
+    Args:
+        point (list): [x, y] 格式的点坐标
+        bbox (dict): 包含 min_x, min_y, max_x, max_y 的边界框信息
+    
+    Returns:
+        bool: 点是否在边界框内
+    """
+    x, y = point
+    return (bbox['min_x'] <= x <= bbox['max_x'] and 
+            bbox['min_y'] <= y <= bbox['max_y'])
+
+def is_point_in_any_box(point, boxes):
+    """
+    判断点是否在任意一个边界框内
+    
+    Args:
+        point (list): [x, y] 格式的点坐标
+        boxes (list): box字典列表，每个字典包含min_x,min_y,max_x,max_y
+    
+    Returns:
+        tuple: (bool, int) - 是否在box内及box索引
+    """
+    x, y = point
+    for i, box in enumerate(boxes):
+        if (box['min_x'] <= x <= box['max_x'] and 
+            box['min_y'] <= y <= box['max_y']):
+            return True, i
+    return False, -1
+
+def get_box_node_indices(G, boxes):
+    """
+    获取在边界框内和外的节点索引
+    
+    Args:
+        G (networkx.Graph): 图结构
+        boxes (list): box字典列表
+    
+    Returns:
+        tuple: (inside_indices, outside_indices, 
+                inside_pos_indices, outside_pos_indices,
+                inside_neg_indices, outside_neg_indices)
+    """
+    inside_indices = []
+    outside_indices = []
+    inside_pos_indices = []
+    outside_pos_indices = []
+    inside_neg_indices = []
+    outside_neg_indices = []
+    
+    for node in G.nodes():
+        # 计算节点的中心点坐标
+        point = calculate_center_points([node], 560)[0]
+        
+        # 判断点是否在任意box内
+        is_inside, _ = is_point_in_any_box(point, boxes)
+        
+        if is_inside:
+            inside_indices.append(node)
+            if G.nodes[node]['category'] == 'pos':
+                inside_pos_indices.append(node)
+            else:
+                inside_neg_indices.append(node)
+        else:
+            outside_indices.append(node)
+            if G.nodes[node]['category'] == 'pos':
+                outside_pos_indices.append(node)
+            else:
+                outside_neg_indices.append(node)
+    
+    return (inside_indices, outside_indices,
+            inside_pos_indices, outside_pos_indices,
+            inside_neg_indices, outside_neg_indices)
+
+def normalize_distance(distance, prev_distance):
+    """归一化距离差值到[-1,1]范围"""
+    if prev_distance == 0:
+        return 0
+    normalized = (prev_distance - distance) / max(abs(prev_distance), abs(distance))
+    return max(min(normalized, 1), -1)
+
 class NodeOptimizationEnv:
     def __init__(self, G, max_steps):
         """Initialize the graph optimization environment."""
@@ -429,97 +519,6 @@ class NodeAgent:
         for state, action, reward, next_state in batch:
             self.update_q_table(state, action, reward, next_state)
 
-def show_mask(mask,ax, random_color=False):
-
-    color = np.array([50/255, 120/255, 255/255, 0.8])
-    h, w = mask.shape[-2:]
-    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
-    ax.imshow(mask_image)
-
-def is_point_in_box(point, bbox):
-    """
-    判断点是否在边界框内
-    
-    Args:
-        point (list): [x, y] 格式的点坐标
-        bbox (dict): 包含 min_x, min_y, max_x, max_y 的边界框信息
-    
-    Returns:
-        bool: 点是否在边界框内
-    """
-    x, y = point
-    return (bbox['min_x'] <= x <= bbox['max_x'] and 
-            bbox['min_y'] <= y <= bbox['max_y'])
-
-def is_point_in_any_box(point, boxes):
-    """
-    判断点是否在任意一个边界框内
-    
-    Args:
-        point (list): [x, y] 格式的点坐标
-        boxes (list): box字典列表，每个字典包含min_x,min_y,max_x,max_y
-    
-    Returns:
-        tuple: (bool, int) - 是否在box内及box索引
-    """
-    x, y = point
-    for i, box in enumerate(boxes):
-        if (box['min_x'] <= x <= box['max_x'] and 
-            box['min_y'] <= y <= box['max_y']):
-            return True, i
-    return False, -1
-
-def get_box_node_indices(G, boxes):
-    """
-    获取在边界框内和外的节点索引
-    
-    Args:
-        G (networkx.Graph): 图结构
-        boxes (list): box字典列表
-    
-    Returns:
-        tuple: (inside_indices, outside_indices, 
-                inside_pos_indices, outside_pos_indices,
-                inside_neg_indices, outside_neg_indices)
-    """
-    inside_indices = []
-    outside_indices = []
-    inside_pos_indices = []
-    outside_pos_indices = []
-    inside_neg_indices = []
-    outside_neg_indices = []
-    
-    for node in G.nodes():
-        # 计算节点的中心点坐标
-        point = calculate_center_points([node], 560)[0]
-        
-        # 判断点是否在任意box内
-        is_inside, _ = is_point_in_any_box(point, boxes)
-        
-        if is_inside:
-            inside_indices.append(node)
-            if G.nodes[node]['category'] == 'pos':
-                inside_pos_indices.append(node)
-            else:
-                inside_neg_indices.append(node)
-        else:
-            outside_indices.append(node)
-            if G.nodes[node]['category'] == 'pos':
-                outside_pos_indices.append(node)
-            else:
-                outside_neg_indices.append(node)
-    
-    return (inside_indices, outside_indices,
-            inside_pos_indices, outside_pos_indices,
-            inside_neg_indices, outside_neg_indices)
-
-def normalize_distance(distance, prev_distance):
-    """归一化距离差值到[-1,1]范围"""
-    if prev_distance == 0:
-        return 0
-    normalized = (prev_distance - distance) / max(abs(prev_distance), abs(distance))
-    return max(min(normalized, 1), -1)
-
 class BoxOptimizationEnv:
     def __init__(self, G, bbox_initial=None, image_size=560, max_steps=100, step_size=14):
         """初始化多box优化环境
@@ -601,7 +600,7 @@ class BoxOptimizationEnv:
             return None
         
         box = self.boxes[box_idx]
-        patch_size = 14  # DINO特征的patch大小
+        patch_size = 14 
         
         # 计算box覆盖的patch范围
         start_row = box['min_y'] // patch_size
@@ -1085,15 +1084,6 @@ class BoxAgent:
 
 class MultiAgentEnv:
     def __init__(self, G, bbox_initial=None, image_size=560, max_steps=100, step_size=14):
-        """初始化多智能体环境
-
-        Args:
-            G (nx.Graph): 图结构
-            bbox_initial (list): 初始边界框 [min_x, min_y, max_x, max_y]
-            image_size (int): 图像大小
-            max_steps (int): 最大步数
-            step_size (int): 移动步长
-        """
         self.node_env = NodeOptimizationEnv(G, max_steps)
         self.box_env = BoxOptimizationEnv(G, bbox_initial, image_size, max_steps, step_size)
         self.node_env.boxes = self.box_env.boxes  # 初始化时共享boxes
@@ -1114,18 +1104,7 @@ class MultiAgentEnv:
             
         return {"node": node_state, "box": box_state}
     
-    def step(self, action_dict):
-        """执行动作并计算综合奖励
-        
-        Args:
-            action_dict: 包含节点和边界框动作的字典
-                {"node": node_action, "box": box_action}
-        
-        Returns:
-            next_state: 下一个状态
-            reward: 奖励
-            done: 是否完成
-        """      
+    def step(self, action_dict): 
         # 执行节点智能体的动作
         if "node" in action_dict:
             node_next_state, node_reward, node_done = self.node_env.step(action_dict["node"])
