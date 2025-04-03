@@ -124,8 +124,7 @@ def is_point_in_box(point, bbox):
         bool: 点是否在边界框内
     """
     x, y = point
-    return (bbox['min_x'] <= x <= bbox['max_x'] and 
-            bbox['min_y'] <= y <= bbox['max_y'])
+    return (bbox['min_x'] <= x <= bbox['max_x'] and bbox['min_y'] <= y <= bbox['max_y'])
 
 def is_point_in_any_box(point, boxes):
     """
@@ -140,8 +139,7 @@ def is_point_in_any_box(point, boxes):
     """
     x, y = point
     for i, box in enumerate(boxes):
-        if (box['min_x'] <= x <= box['max_x'] and 
-            box['min_y'] <= y <= box['max_y']):
+        if (box['min_x'] <= x <= box['max_x'] and box['min_y'] <= y <= box['max_y']):
             return True, i
     return False, -1
 
@@ -249,11 +247,11 @@ class NodeOptimizationEnv:
 
         reward = self.calculate_reward(operation)
         
-        if self.min_nodes < len(self.pos_nodes) < self.max_nodes and self.min_nodes < len(self.neg_nodes) < self.max_nodes:
-            # 如果reward为负，回滚操作
-            if reward < 0:
-                self.revertStep(action)
-                reward = self.calculate_reward(operation)
+        # if self.min_nodes < len(self.pos_nodes) < self.max_nodes and self.min_nodes < len(self.neg_nodes) < self.max_nodes:
+        # 如果reward为负，回滚操作
+        if reward < 0:
+            self.revertStep(action)
+            reward = self.calculate_reward(operation)
         
         self.steps += 1
         done = self.is_done()
@@ -348,15 +346,15 @@ class NodeOptimizationEnv:
         else:
             reward -= 1 * (mean_physical_cross - self.previous_physical_cross_mean)
 
-        if operation == "add":
-            # 根据add操作后的状态变化调整惩罚
-            if (mean_feature_pos < self.previous_feature_pos_mean and 
-                mean_feature_cross > self.previous_feature_cross_mean):
-                # add操作改善了特征距离，给予较小惩罚
-                reward -= 3
-            else:
-                # add操作没有改善特征距离，给予较大惩罚
-                reward -= 5
+        # if operation == "add":
+        #     # 根据add操作后的状态变化调整惩罚
+        #     if (mean_feature_pos < self.previous_feature_pos_mean and 
+        #         mean_feature_cross > self.previous_feature_cross_mean):
+        #         # add操作改善了特征距离，给予较小惩罚
+        #         reward -= 3
+        #     else:
+        #         # add操作没有改善特征距离，给予较大惩罚
+        #         reward -= 5
 
         # 初始化位置相关惩罚
         position_penalty = 0
@@ -445,14 +443,6 @@ class NodeAgent:
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
     def _get_state_hash(self, state):
-        """将图状态转换为哈希值
-        
-        Args:
-            state: 图状态
-            
-        Returns:
-            状态的哈希值
-        """
         # 提取图的关键特征作为状态
         pos_nodes = sorted([n for n, d in state.nodes(data=True) if d['category'] == 'pos'])
         neg_nodes = sorted([n for n, d in state.nodes(data=True) if d['category'] == 'neg'])
@@ -513,7 +503,6 @@ class NodeAgent:
         pos_nodes_count = len(self.env.pos_nodes)
         neg_nodes_count = len(self.env.neg_nodes)
 
-        # 只在范围之间添加 add 动作
         if self.env.min_nodes < pos_nodes_count < self.env.max_nodes and self.env.min_nodes < neg_nodes_count < self.env.max_nodes:
             actions.extend(restore_pos_actions)
             actions.extend(restore_neg_actions)
@@ -521,7 +510,6 @@ class NodeAgent:
             actions.extend(remove_neg_actions)
             # actions.extend([(node, "add") for node in range(state.number_of_nodes(), state.number_of_nodes() + 10)])
         else:
-            # 超出上下限范围时，只允许 restore 和 remove 操作
             if pos_nodes_count <= self.env.min_nodes:
                 actions.extend(restore_pos_actions)
             elif pos_nodes_count >= self.env.max_nodes:
@@ -748,12 +736,8 @@ class BoxOptimizationEnv:
         current_difference = self.calculate_outer_difference()
         
         # 计算变化量
-        coherence_change = normalize_distance(
-            current_coherence, 
-            self.previous_inner_coherence)
-        difference_change = normalize_distance(
-            current_difference,
-            self.previous_outer_difference)
+        coherence_change = normalize_distance(current_coherence, self.previous_inner_coherence)
+        difference_change = normalize_distance(current_difference, self.previous_outer_difference)
             
         # 更新历史值
         self.previous_inner_coherence = current_coherence
@@ -869,7 +853,6 @@ class BoxOptimizationEnv:
         if box_idx >= len(self.boxes):
             return self.get_state(), 0, True
             
-        old_box = self.boxes[box_idx].copy()
         old_boxes = self.boxes.copy()
         
         reward = 0
