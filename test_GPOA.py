@@ -6,7 +6,8 @@ import random
 import networkx as nx
 from datetime import timedelta
 import time
-from utils import NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, BoxOptimizationEnv, calculate_distances, convert_to_edges
+from agents import NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, BoxOptimizationEnv
+from utils import calculate_distances, convert_to_edges
 from tqdm import tqdm
 import json
 

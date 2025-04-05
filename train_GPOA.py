@@ -6,7 +6,8 @@ import random
 from collections import deque
 import time
 from datetime import timedelta, datetime
-from utils import NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, BoxOptimizationEnv, calculate_distances, convert_to_edges, get_box_node_indices
+from agents import NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, BoxOptimizationEnv
+from utils import calculate_distances, convert_to_edges, get_box_node_indices
 import json
 
 # Constants
