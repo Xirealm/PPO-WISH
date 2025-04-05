@@ -247,11 +247,11 @@ class NodeOptimizationEnv:
 
         reward = self.calculate_reward(operation)
         
-        # if self.min_nodes < len(self.pos_nodes) < self.max_nodes and self.min_nodes < len(self.neg_nodes) < self.max_nodes:
-        # 如果reward为负，回滚操作
-        if reward < 0:
-            self.revertStep(action)
-            reward = self.calculate_reward(operation)
+        if self.min_nodes < len(self.pos_nodes) < self.max_nodes and self.min_nodes < len(self.neg_nodes) < self.max_nodes:
+            # 如果reward为负，回滚操作
+            if reward < 0:
+                self.revertStep(action)
+                reward = self.calculate_reward(operation)
         
         self.steps += 1
         done = self.is_done()

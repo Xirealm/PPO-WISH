@@ -12,7 +12,7 @@ def get_patch_coordinates(indices, image_size=560, patch_size=14):
     centers_y = (rows * patch_size + patch_size // 2).astype(int)
     return np.column_stack((centers_x, centers_y))
 
-def cluster_features(features, pos_indices, eps=0.4, min_samples=2):
+def cluster_features(features, pos_indices, eps=0.3, min_samples=2):
     """多尺度特征聚类策略"""
     all_features = features[1]  # [N, D]
     device = all_features.device
@@ -23,8 +23,8 @@ def cluster_features(features, pos_indices, eps=0.4, min_samples=2):
     similarities = torch.nn.functional.cosine_similarity(all_features, pos_center.unsqueeze(0))
     
     clustered_indices = []
-    # 相似度阈值
-    similarity_thresholds = [0.8, 0.6] 
+    # 增加更多的相似度阈值档位
+    similarity_thresholds = [0.85, 0.75, 0.65, 0.55]
     
     for threshold in similarity_thresholds:
         similar_mask = similarities > threshold
@@ -33,10 +33,12 @@ def cluster_features(features, pos_indices, eps=0.4, min_samples=2):
         if len(candidate_indices) >= min_samples:
             coords = get_patch_coordinates(candidate_indices)
             pos_coords = get_patch_coordinates(pos_indices)
-            dist_mask = np.min(np.linalg.norm(coords[:, None] - pos_coords, axis=2), axis=1) < 112
+            # 减小距离限制，允许检测更小的区域
+            dist_mask = np.min(np.linalg.norm(coords[:, None] - pos_coords, axis=2), axis=1) < 84
             candidate_indices = candidate_indices[torch.from_numpy(dist_mask).to(device)]
             
             if len(candidate_indices) >= min_samples:
+                # 使用更小的eps值进行聚类
                 clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(all_features[candidate_indices].cpu().numpy())
                 for label in np.unique(clustering.labels_):
                     if label != -1:
@@ -44,14 +46,15 @@ def cluster_features(features, pos_indices, eps=0.4, min_samples=2):
                         if len(cluster_indices) >= min_samples:
                             clustered_indices.append(cluster_indices)
     
-    # 进行窗口聚类
-    window_size, stride = 5, 3
+    # 使用更小的窗口和步长进行细粒度扫描
+    window_size, stride = 3, 2
     for i in range(0, patches_per_side - window_size + 1, stride):
         for j in range(0, patches_per_side - window_size + 1, stride):
             window_indices = torch.tensor([(i + wi) * patches_per_side + (j + wj) 
                                          for wi in range(window_size) 
                                          for wj in range(window_size)], device=device)
-            high_sim_mask = similarities[window_indices] > 0.5 
+            # 窗口内的相似度要求
+            high_sim_mask = similarities[window_indices] > 0.5
             if high_sim_mask.sum() >= min_samples:
                 clustered_indices.append(window_indices[high_sim_mask])
     
@@ -116,6 +119,7 @@ def filter_overlapping_boxes(boxes, iou_threshold=0.7):
         for box2 in filtered_boxes:
             if calculate_iou(box1, box2) > iou_threshold:
                 should_keep = False
+                print(1)
                 break
         if should_keep:
             filtered_boxes.append(box1)
@@ -135,9 +139,6 @@ def merge_boxes(boxes, min_distance=112, patch_size=14):
     if not boxes:
         return None
     
-    # 首先过滤重叠box
-    boxes = filter_overlapping_boxes(boxes)
-    
     def are_adjacent(box1, box2):
         # 计算两个box的中心点距离
         center1 = ((box1[0] + box1[2]) / 2, (box1[1] + box1[3]) / 2)
@@ -146,14 +147,14 @@ def merge_boxes(boxes, min_distance=112, patch_size=14):
         return distance < min_distance * 1.5
 
     # 首先筛选出有效的box
-    valid_boxes = [box for box in boxes if count_patches(box) > 3]
+    valid_boxes = [box for box in boxes if count_patches(box) > 4]
     if not valid_boxes:
         return None
 
     # 处理小box
     merged = False
     for box in boxes:
-        if count_patches(box) <= 3:  # 对于小box
+        if count_patches(box) <= 4:  # 对于小box
             for i, valid_box in enumerate(valid_boxes):
                 if are_adjacent(box, valid_box):
                     # 合并小box到邻接的valid box
@@ -196,13 +197,6 @@ def generate_boxes(features, pos_indices):
     
     # 过滤重叠box
     filtered_boxes = filter_overlapping_boxes(boxes)
-    
-    # 过滤掉patch数小于等于3的box
-    filtered_boxes = [box for box in filtered_boxes if count_patches(box) > 2]
-    
-    # 如果filtered_boxes为空，直接返回None
-    if not filtered_boxes:
-        return [], None
         
     merged_box = merge_boxes(filtered_boxes)
     return filtered_boxes, merged_box
