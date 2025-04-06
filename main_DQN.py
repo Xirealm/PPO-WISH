@@ -19,7 +19,7 @@ sys.path.append(generate_path)
 # from segment_anything import sam_model_registry, SamPredictor
 from segmenter.segment import process_image, loading_seg, seg_main, show_points
 from feature_matching.generate_points import generate, loading_dino, distance_calculate
-from test_GPOA import test_agent, optimize_nodes
+from test_DQN import test_agent, optimize_nodes
 from agents import NodeOptimizationEnv, NodeAgent, BoxAgent, MultiAgentEnv, BoxOptimizationEnv
 from utils import calculate_distances, convert_to_edges, calculate_center_points, refine_mask
 
