@@ -338,7 +338,6 @@ class BoxOptimizationEnv:
                     
                     reward = self.calculate_box_reward(box_idx)
         
-        print(f"box_reward{reward}")
         # 如果奖励为负，回滚操作
         if reward < 0:
             self.boxes = old_boxes
