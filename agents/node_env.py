@@ -177,21 +177,21 @@ class NodeOptimizationEnv:
         inside_neg_indices = box_info[4]  # 获取box内负提示点
         
         # 根据操作类型和位置给予不同的奖励
-        if operation == "restore_pos" or operation == "add":
+        if operation == "restore_pos":
             if len(outside_pos_indices) > 0:
-                position_reward -= 5  # box外新增正提示点 -5
+                position_reward -= 2 * (outside_pos_indices / len(self.G.nodes())) 
                 
         if operation == "restore_neg":
             if len(inside_neg_indices) > 0:
-                position_reward -= 5  # box内新增负提示点 -5
+                position_reward -= 2 * (outside_pos_indices / len(self.G.nodes())) 
                 
         # 对每个box内的负样本数量进行检查和惩罚
-        box_counts = count_nodes_per_box(self.G, self.boxes)
-        for pos_count, neg_count in box_counts:
-            if pos_count >= 2:
-                position_reward -= 2 * pos_count
-            if neg_count >= 2:  # 如果某个box内有2个及以上的负样本
-                position_reward -= 2 * neg_count  # 每个负样本给予10分的惩罚
+        # box_counts = count_nodes_per_box(self.G, self.boxes)
+        # for pos_count, neg_count in box_counts:
+        #     if pos_count == 1 or neg_count == 1:
+        #         position_reward += 1 * pos_count
+        #     if pos_count >= 2 or neg_count >= 2:
+        #         position_reward -= 1 * pos_count
 
         print(f"Operation: {operation}, Position Reward: {position_reward}")
         reward += position_reward
