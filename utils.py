@@ -190,3 +190,33 @@ def normalize_distance(distance, prev_distance):
         return 0
     normalized = (prev_distance - distance) / max(abs(prev_distance), abs(distance))
     return max(min(normalized, 1), -1)
+
+def count_nodes_per_box(G, boxes):
+    """
+    统计每个box内的正负节点数量
+    
+    Args:
+        G (networkx.Graph): 图结构
+        boxes (list): box字典列表
+    
+    Returns:
+        list: 每个box内的[正节点数, 负节点数]列表
+    """
+    box_counts = []
+    
+    for box in boxes:
+        pos_count = 0
+        neg_count = 0
+        
+        for node in G.nodes():
+            point = calculate_center_points([node], 560)[0]
+            if (box['min_x'] <= point[0] <= box['max_x'] and 
+                box['min_y'] <= point[1] <= box['max_y']):
+                if G.nodes[node]['category'] == 'pos':
+                    pos_count += 1
+                else:
+                    neg_count += 1
+                    
+        box_counts.append([pos_count, neg_count])
+        
+    return box_counts

@@ -157,7 +157,7 @@ class NodeOptimizationEnv:
             reward += 1 * (self.previous_physical_cross_mean - mean_physical_cross)
         else:
             reward -= 1 * (mean_physical_cross - self.previous_physical_cross_mean)
-
+            
         # if operation == "add":
         #     # 根据add操作后的状态变化调整惩罚
         #     if (mean_feature_pos < self.previous_feature_pos_mean and 
@@ -168,50 +168,33 @@ class NodeOptimizationEnv:
         #         # add操作没有改善特征距离，给予较大惩罚
         #         reward -= 5
 
-        # 初始化位置相关惩罚
-        position_penalty = 0
+        # 初始化位置相关奖励
+        position_reward = 0
         
-        # 针对恢复节点操作的位置惩罚
-        if operation == "restore_pos":
-            restored_nodes = [n for n, d in self.G.nodes(data=True) 
-                            if n not in self.original_G.nodes() and d['category'] == 'pos']
-            if restored_nodes:
-                last_restored = restored_nodes[-1]
-                point = calculate_center_points([last_restored], 560)[0]
-                in_any_box = False
+        # 获取在box内外的节点信息
+        box_info = get_box_node_indices(self.G, self.boxes)
+        outside_pos_indices = box_info[3]  # 获取box外正提示点
+        inside_neg_indices = box_info[4]  # 获取box内负提示点
+        
+        # 根据操作类型和位置给予不同的奖励
+        if operation == "restore_pos" or operation == "add":
+            if len(outside_pos_indices) > 0:
+                position_reward -= 5  # box外新增正提示点 -5
                 
-                # 检查是否在任意box内
-                for box in self.boxes:
-                    if (box['min_x'] <= point[0] <= box['max_x'] and 
-                        box['min_y'] <= point[1] <= box['max_y']):
-                        in_any_box = True
-                        # 统计同一box内的正节点数量
-                        pos_count = sum(1 for n in self.G.nodes() 
-                                     if self.G.nodes[n]['category'] == 'pos' and
-                                     box['min_x'] <= calculate_center_points([n], 560)[0][0] <= box['max_x'] and
-                                     box['min_y'] <= calculate_center_points([n], 560)[0][1] <= box['max_y'])
-                        if pos_count > 2:
-                            position_penalty -= 5  # 同一box内正节点过多的惩罚
-                        break
+        if operation == "restore_neg":
+            if len(inside_neg_indices) > 0:
+                position_reward -= 5  # box内新增负提示点 -5
                 
-                if not in_any_box:
-                    position_penalty -= 5  # box外部的惩罚
-                    
-        elif operation == "restore_neg":
-            restored_nodes = [n for n, d in self.G.nodes(data=True) 
-                            if n not in self.original_G.nodes() and d['category'] == 'neg']
-            if restored_nodes:
-                last_restored = restored_nodes[-1]
-                point = calculate_center_points([last_restored], 560)[0]
-                
-                # 检查是否在任意box内部
-                for box in self.boxes:
-                    if (box['min_x'] <= point[0] <= box['max_x'] and 
-                        box['min_y'] <= point[1] <= box['max_y']):
-                        position_penalty -= 5  # box内部的惩罚
-                        break
+        # 对每个box内的负样本数量进行检查和惩罚
+        box_counts = count_nodes_per_box(self.G, self.boxes)
+        for pos_count, neg_count in box_counts:
+            if pos_count >= 2:
+                position_reward -= 2 * pos_count
+            if neg_count >= 2:  # 如果某个box内有2个及以上的负样本
+                position_reward -= 2 * neg_count  # 每个负样本给予10分的惩罚
 
-        reward += position_penalty
+        print(f"Operation: {operation}, Position Reward: {position_reward}")
+        reward += position_reward
 
         self.previous_pos_num = len(self.pos_nodes)
         self.previous_neg_num = len(self.neg_nodes)
@@ -225,4 +208,4 @@ class NodeOptimizationEnv:
 
     def is_done(self):
         """Check if the maximum steps have been reached."""
-        return self.steps >= self.max_steps 
+        return self.steps >= self.max_steps
