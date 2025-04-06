@@ -79,8 +79,6 @@ def load_agents():
         # 从model目录加载模型
         node_model_path = os.path.join(BASE_DIR, 'model', 'node_best_model.pkl')
         box_model_path = os.path.join(BASE_DIR, 'model', 'box_best_model.pkl')
-             
-        print(f"从model目录加载模型...")
         node_agent.policy_net.load_state_dict(torch.load(node_model_path))
         box_agent.policy_net.load_state_dict(torch.load(box_model_path))
         
