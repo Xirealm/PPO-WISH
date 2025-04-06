@@ -10,6 +10,7 @@ class MultiAgentEnv:
         self.steps = 0
         self.max_steps = max_steps
         self.features = None  # 添加特征存储
+        self.best_reward = -float('inf')  # 初始化最佳奖励
         
     def reset(self):
         """重置环境"""

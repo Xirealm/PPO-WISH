@@ -50,8 +50,6 @@ class BoxAgent:
         self.memory = deque(maxlen=10000)
         self.best_memory = deque(maxlen=10000)
         self.batch_size = 64
-        self.best_reward = -float('inf')
-        self.best_reward_save = -float('inf')
 
     def update_epsilon(self):
         """更新探索率"""

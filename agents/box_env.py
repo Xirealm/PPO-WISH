@@ -339,11 +339,11 @@ class BoxOptimizationEnv:
                     reward = self.calculate_box_reward(box_idx)
         
         # 如果奖励为负，回滚操作
-        if reward < 0:
-            self.boxes = old_boxes
-            reward = 0
-        else:
-            self.steps += 1
+        # if reward < 0:
+        #     self.boxes = old_boxes
+        #     reward = 0
+        # else:
+        self.steps += 1
         
         done = self.steps >= self.max_steps
         return self.get_state(), reward, done

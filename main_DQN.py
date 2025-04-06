@@ -42,7 +42,6 @@ BASE_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(BASE_DIR, 'dataset', DATASET, CATAGORY)
 REFERENCE_IMAGE_DIR = os.path.join(DATA_DIR, 'reference_images')
 MASK_DIR = os.path.join(DATA_DIR, 'reference_masks')
-Q_TABLE_PATH = os.path.join(BASE_DIR, 'model', 'best_q_table.pkl')
 IMAGE_DIR = os.path.join(DATA_DIR, 'target_images')  # Path for test images
 RESULTS_DIR = os.path.join(BASE_DIR, 'results', DATASET, CATAGORY)
 SAVE_DIR = os.path.join(RESULTS_DIR, 'masks')
@@ -77,8 +76,10 @@ def load_agents():
         box_agent = BoxAgent(box_env)
         
         # 从model目录加载模型
-        node_model_path = os.path.join(BASE_DIR, 'model', 'node_best_model.pkl')
-        box_model_path = os.path.join(BASE_DIR, 'model', 'box_best_model.pkl')
+        node_model_path = os.path.join(BASE_DIR, 'model', 'node_final_model.pkl')
+        box_model_path = os.path.join(BASE_DIR, 'model', 'box_final_model.pkl')
+        # node_model_path = os.path.join(BASE_DIR, 'model', 'node_best_model.pkl')
+        # box_model_path = os.path.join(BASE_DIR, 'model', 'box_best_model.pkl')
         node_agent.policy_net.load_state_dict(torch.load(node_model_path))
         box_agent.policy_net.load_state_dict(torch.load(box_model_path))
         
@@ -214,9 +215,6 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
                         next_state, _, done = multi_env.step(action_dict)
                         state = next_state
                         step_count += 1
-                        
-                        if step_count % 10 == 0:
-                            print(f"已完成 {step_count} 步优化")
                             
                 # 恢复智能体原始epsilon值
                 node_agent.epsilon = node_epsilon

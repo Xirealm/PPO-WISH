@@ -46,9 +46,6 @@ class NodeAgent:
         self.optimizer = torch.optim.Adam(self.policy_net.parameters())
         self.criterion = nn.SmoothL1Loss()
         
-        # Metrics
-        self.best_reward = -float('inf')
-        self.best_reward_save = -float('inf')
         self.best_pos = 100
         self.best_cross = 0
         self.best_pos_feature_distance = float('inf')
