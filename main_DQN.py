@@ -88,8 +88,8 @@ def load_agents():
         box_agent.policy_net.eval()
         
         # 禁用智能体的探索行为
-        node_agent.epsilon = 0.0
-        box_agent.epsilon = 0.0
+        node_agent.epsilon = 0.5
+        box_agent.epsilon = 0.5
         
         # 加载性能指标（如果存在）
         metrics_path = os.path.join(BASE_DIR, 'model', 'performance_metrics.json')
@@ -196,10 +196,8 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
                 box_agent.policy_net.eval()
                 
                 # 禁用随机探索
-                node_epsilon = node_agent.epsilon
-                box_epsilon = box_agent.epsilon
-                node_agent.epsilon = 0.0
-                box_agent.epsilon = 0.0
+                node_agent.epsilon = 0.5
+                box_agent.epsilon = 0.5
                 
                 # Alternate execution of node agent and box agent actions
                 step_count = 0
@@ -216,10 +214,6 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
                         state = next_state
                         step_count += 1
                             
-                # 恢复智能体原始epsilon值
-                node_agent.epsilon = node_epsilon
-                box_agent.epsilon = box_epsilon
-                
                 # Get optimized prompts and bounding box
                 opt_pos_indices = torch.tensor([node for node in multi_env.node_env.pos_nodes])
                 opt_neg_indices = torch.tensor([node for node in multi_env.node_env.neg_nodes])

@@ -18,6 +18,7 @@ BASE_DIR = os.path.dirname(__file__)
 def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, file_prefixes, max_steps):
     """训练多智能体系统"""
     rewards = []
+    best_reward = -float('inf')  # 跨episode存储最佳奖励
     image_size = SIZE
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(output_path, exist_ok=True)  # 创建输出目录
@@ -98,8 +99,8 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         print(f"Inside bboxes - Pos: {len(inside_pos_indices)}, Neg: {len(inside_neg_indices)}")
         print(f"Outside bboxes - Pos: {len(outside_pos_indices)}, Neg: {len(outside_neg_indices)}")
 
-        # 初始化多智能体环境
-        multi_env = MultiAgentEnv(G, boxes, image_size, max_steps)
+        # 初始化多智能体环境,传入当前最佳奖励
+        multi_env = MultiAgentEnv(G, boxes, image_size, max_steps, best_reward=best_reward)
         node_agent.env = multi_env.node_env
         box_agent.env = multi_env.box_env
         
@@ -111,21 +112,21 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         done = False
         total_reward = 0
 
-        # 分别根据最佳奖励动态调整epsilon
-        # 根据环境中存储的最佳奖励调整epsilon
-        normalized_reward = (multi_env.best_reward - 0) / (5 - 0)
-        if multi_env.best_reward < 0:
+        # 根据最佳奖励调整epsilon
+        print(f"Current best reward: {best_reward}")
+        if best_reward < 0:
             node_agent.epsilon = node_agent.epsilon_start
             box_agent.epsilon = box_agent.epsilon_start
-        elif multi_env.best_reward >= 10:
+        elif best_reward >= 10:
             node_agent.epsilon = node_agent.epsilon_end
             box_agent.epsilon = box_agent.epsilon_end
         else:
+            normalized_reward = (best_reward - 0) / (5 - 0)
             epsilon = 1 - normalized_reward
             node_agent.epsilon = epsilon
             box_agent.epsilon = epsilon
 
-        print(f"Best reward: {multi_env.best_reward}, Epsilon: {node_agent.epsilon}")
+        print(f"Best reward: {best_reward}, Node Epsilon: {node_agent.epsilon}, Box Epsilon: {box_agent.epsilon}")
 
         # 训练循环 - 交替执行节点智能体和矩形框智能体的动作  
         step_count = 0
@@ -141,6 +142,7 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
                 next_state_tensor = node_agent._get_state_features(next_state["node"])
                 node_agent.memory.append((state_tensor, node_action, reward, next_state_tensor))
                 node_agent.replay()
+                node_agent.update_epsilon()  # 更新epsilon
             else:  # 奇数步执行矩形框智能体动作
                 state_tensor = box_agent._get_state_features(state["box"])
                 box_action = box_agent.get_action(state["box"])
@@ -151,6 +153,7 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
                 next_state_tensor = box_agent._get_state_features(next_state["box"])
                 box_agent.memory.append((state_tensor, box_action, reward, next_state_tensor))
                 box_agent.replay()
+                box_agent.update_epsilon()  # 更新epsilon
             
             state = next_state
             total_reward += reward
@@ -163,11 +166,11 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
 
         print(f"Total reward: {total_reward}")
         
-        # 使用环境中的best_reward进行判断
-        if total_reward > multi_env.best_reward:
+        # 更新最佳奖励
+        if total_reward > best_reward:
             print(f"New best reward: {total_reward}")
-            multi_env.best_reward = total_reward
-            
+            best_reward = total_reward
+            multi_env.best_reward = best_reward  # 更新环境中的最佳奖励
             # 更新两个智能体的最佳记忆
             node_agent.best_memory = deque(node_agent.memory, maxlen=node_agent.memory.maxlen)
             box_agent.best_memory = deque(box_agent.memory, maxlen=box_agent.memory.maxlen)
@@ -189,7 +192,7 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
                 'node_optimizer': node_agent.optimizer.state_dict(),
                 'box_optimizer': box_agent.optimizer.state_dict(),
                 'episode': episode,
-                'best_reward': multi_env.best_reward
+                'best_reward': best_reward
             }, os.path.join(best_model_path, 'best_model.pt'))
             
             # 保存单独的模型文件
@@ -200,7 +203,7 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
 
         # 保存训练结果
         rewards.append(total_reward)
-        save_multi_agent_results(node_agent, box_agent, episode, total_reward, output_path, selected_prefix)
+        save_multi_agent_results(node_agent, box_agent, episode, episodes, total_reward, output_path, selected_prefix)
 
         # 计算并显示时间信息
         elapsed_time = time.time() - start_time
@@ -242,7 +245,7 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
     
     return rewards
 
-def save_multi_agent_results(node_agent, box_agent, episode, reward, output_path, prefix):
+def save_multi_agent_results(node_agent, box_agent, current_episode, total_episodes, reward, output_path, prefix):
     """保存多智能体训练结果"""
     node_state = node_agent.env.get_state()
     box_state, boxes = box_agent.env.get_state()
@@ -257,7 +260,10 @@ def save_multi_agent_results(node_agent, box_agent, episode, reward, output_path
     # 保存训练信息到单个txt文件
     info_path = os.path.join(episode_dir, f'training_log.txt')
     with open(info_path, "a") as f:
-        f.write(f"Episode {episode} - {prefix}\n")
+        f.write(f"Episode Progress: {current_episode + 1}/{total_episodes}\n")
+        f.write(f"Data Prefix: {prefix}\n")
+        f.write(f"Node Agent Epsilon: {node_agent.epsilon:.4f}\n")  # 添加节点智能体的epsilon
+        f.write(f"Box Agent Epsilon: {box_agent.epsilon:.4f}\n")   # 添加边界框智能体的epsilon
         f.write(f"Reward: {reward}\n")
         f.write(f"Positive nodes: {len(pos_nodes)}, Negative nodes: {len(neg_nodes)}\n")
         f.write(f"Number of boxes: {len(boxes)}\n")
@@ -273,7 +279,7 @@ def main():
     # 提取文件名前缀（前三个下划线分隔的部分）
     file_prefixes = set('_'.join(f.split('_')[:3]) for f in files)
     # 训练参数设置
-    episodes = 10  # 训练回合数
+    episodes = 100  # 训练回合数
     max_steps = 100  # 每个episode的最大步数
     
     # 创建输出目录结构

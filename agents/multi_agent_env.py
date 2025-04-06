@@ -3,14 +3,15 @@ from agents.box_env import BoxOptimizationEnv
 from utils import calculate_center_points
 
 class MultiAgentEnv:
-    def __init__(self, G, bbox_initial=None, image_size=560, max_steps=100, step_size=14):
+    def __init__(self, G, bbox_initial=None, image_size=560, max_steps=100, step_size=14, best_reward=None):
         self.node_env = NodeOptimizationEnv(G, max_steps)
         self.box_env = BoxOptimizationEnv(G, bbox_initial, image_size, max_steps, step_size)
         self.node_env.boxes = self.box_env.boxes  # 初始化时共享boxes
         self.steps = 0
         self.max_steps = max_steps
         self.features = None  # 添加特征存储
-        self.best_reward = -float('inf')  # 初始化最佳奖励
+        # 如果提供了最佳奖励，则使用它；否则使用默认值
+        self.best_reward = best_reward if best_reward is not None else -float('inf')
         
     def reset(self):
         """重置环境"""
@@ -99,4 +100,4 @@ class MultiAgentEnv:
     
     def get_state(self):
         """获取当前状态"""
-        return {"node": self.node_env.get_state(), "box": self.box_env.get_state()} 
+        return {"node": self.node_env.get_state(), "box": self.box_env.get_state()}
