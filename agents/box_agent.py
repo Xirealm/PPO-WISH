@@ -1,59 +1,91 @@
 import random
-from collections import defaultdict, deque
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from collections import deque
 from agents.box_env import BoxOptimizationEnv
 
+class DQN(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(DQN, self).__init__()
+        self.layer1 = nn.Linear(state_dim, 128)
+        self.layer2 = nn.Linear(128, 128)
+        self.layer3 = nn.Linear(128, action_dim)
+        
+    def forward(self, x):
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(x, dtype=torch.float32)
+        x = F.relu(self.layer1(x))
+        x = F.relu(self.layer2(x))
+        return self.layer3(x)
+
 class BoxAgent:
-    def __init__(self, env:BoxOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.995):
-        """初始化box智能体"""
+    def __init__(self, env:BoxOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0,
+                 epsilon_end=0.1, epsilon_decay=0.995):
+        # 首先定义动作空间
+        self.edge_actions = ["shrink_up", "shrink_down", "shrink_left", "shrink_right",
+                           "expand_up", "expand_down", "expand_left", "expand_right"]
+        self.merge_action = ["merge"]
+        self.actions = self.edge_actions + self.merge_action
+        
         self.env = env
-        self.alpha = alpha
         self.gamma = gamma
-        self.epsilon_start = epsilon_start  # 存储初始epsilon值
+        self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
         self.epsilon_decay = epsilon_decay
         self.epsilon = epsilon_start
-        self.q_table = defaultdict(float)
         
-        # 添加其他必要的属性
-        self.best_reward = -float('inf')  # 用于记录最佳奖励
+        # DQN networks
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.state_dim = 6  # [box_features, coherence, difference, adjacency, pos_ratio, neg_ratio] 
+        self.action_dim = len(self.edge_actions) + len(self.merge_action)
+        
+        self.policy_net = DQN(self.state_dim, self.action_dim).to(self.device)
+        self.target_net = DQN(self.state_dim, self.action_dim).to(self.device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+        self.optimizer = torch.optim.Adam(self.policy_net.parameters())
+        self.criterion = nn.SmoothL1Loss()
+        
+        self.memory = deque(maxlen=10000)
+        self.best_memory = deque(maxlen=10000)
+        self.batch_size = 64
+        self.best_reward = -float('inf')
         self.best_reward_save = -float('inf')
-        self.memory = deque(maxlen=10000)  # 添加经验回放内存
-        self.best_memory = deque(maxlen=10000)  # 添加最佳经验内存
-        self.batch_size = 64  # 添加批量大小
-        
-        # 动作空间设计
-        self.edge_actions = ["shrink_up", "shrink_down", "shrink_left", "shrink_right",
-                             "expand_up", "expand_down", "expand_left", "expand_right"]
-        self.merge_action = ["merge"]
-        self.actions = self.edge_actions + self.merge_action
 
     def update_epsilon(self):
         """更新探索率"""
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
-    def get_box_type(self, box_idx):
-        """判断box类型:是否为边界box,是否四面均有邻接"""
-        box = self.env.boxes[box_idx]
+    def _get_state_features(self, state):
+        G, boxes = state
+        box_features = []
+        for box_idx in range(len(boxes)):
+            features = self.env.get_box_features(box_idx)
+            if features is not None:
+                box_features.append(torch.mean(features))
+            
+        box_features_mean = torch.mean(torch.stack(box_features)) if box_features else torch.tensor(0.)
+        coherence = self.env.calculate_inner_coherence()
+        difference = self.env.calculate_outer_difference()
         
-        # 判断是否是边界box(是否具有极值坐标)
-        min_x = min(b['min_x'] for b in self.env.boxes)
-        max_x = max(b['max_x'] for b in self.env.boxes)
-        min_y = min(b['min_y'] for b in self.env.boxes)
-        max_y = max(b['max_y'] for b in self.env.boxes)
+        # Calculate other metrics
+        pos_ratio = self.env.calculate_pos_ratio_in_box()
+        neg_ratio = self.env.calculate_neg_ratio_out_box()
         
-        is_extreme = (box['min_x'] == min_x or box['max_x'] == max_x or 
-                     box['min_y'] == min_y or box['max_y'] == max_y)
+        # Get adjacency info
+        adjacency = len([1 for box_idx in range(len(boxes)) 
+                        if any(self.env.check_box_adjacency(box_idx).values())])
         
-        # 检查四个方向的邻接情况
-        free_edges = self.env.check_box_adjacency(box_idx)
-        all_adjacent = not any(free_edges.values())  # 四面均有邻接
-        
-        return is_extreme, all_adjacent, free_edges
+        return torch.tensor([box_features_mean, coherence, difference,
+                           adjacency/len(boxes), pos_ratio, neg_ratio],
+                          device=self.device, dtype=torch.float32)
 
     def get_action(self, state):
-        """根据box类型选择合适的动作"""
+        state_tensor = self._get_state_features(state)
+        
         if random.random() < self.epsilon:
-            # 50%概率选择极值box,50%概率选择四面邻接box
+            # 仍然使用原有的启发式选择逻辑
             operation_type = random.choice(['extreme', 'adjacent'])
             extreme_boxes = []
             adjacent_boxes = []
@@ -87,99 +119,94 @@ class BoxAgent:
             # 如果所选类型无可用动作,随机选择一个box和动作
             box_idx = random.randint(0, len(self.env.boxes) - 1)
             return (box_idx, random.choice(self.actions), None)
-            
         else:
-            # 使用Q表选择动作
-            state_hash = self._get_state_hash(state)
-            best_value = float('-inf')
-            best_action = None
-            
-            # 同样遵循50%的概率分配
-            if random.random() < 0.5:
-                # 评估极值box的动作
-                for box_idx in range(len(self.env.boxes)):
-                    is_extreme, _, free_edges = self.get_box_type(box_idx)
-                    if is_extreme:
-                        for direction, is_free in free_edges.items():
-                            if is_free:
-                                for op in [f"shrink_{direction}", f"expand_{direction}"]:
-                                    action = (box_idx, op, None)
-                                    value = self.q_table.get((state_hash, action), 0)
-                                    if value > best_value:
-                                        best_value = value
-                                        best_action = action
-            else:
-                # 评估四面邻接box的合并动作
-                for box_idx in range(len(self.env.boxes)):
-                    _, all_adjacent, _ = self.get_box_type(box_idx)
-                    if all_adjacent:
-                        mergeable = self.env.find_mergeable_boxes(box_idx)
-                        for target_idx, similarity in mergeable:
-                            action = (box_idx, "merge", target_idx)
-                            # 在Q值基础上加入相似度作为额外考虑因素
-                            value = self.q_table.get((state_hash, action), 0) + similarity
-                            if value > best_value:
-                                best_value = value
-                                best_action = action
-            
-            return best_action if best_action else (0, "shrink_up", None)
+            with torch.no_grad():
+                q_values = self.policy_net(state_tensor)
+                action_idx = q_values.argmax().item()
+                
+                if action_idx < len(self.edge_actions):
+                    # Edge action
+                    action = (0, self.edge_actions[action_idx], None)
+                else:
+                    # Merge action
+                    mergeable = self.env.find_mergeable_boxes(0)
+                    if mergeable:
+                        target_idx, _ = mergeable[0]
+                        action = (0, "merge", target_idx)
+                    else:
+                        action = (0, self.edge_actions[0], None)
+                        
+        return action
 
-    def _get_state_hash(self, state):
-        """将状态转换为哈希值"""
-        _, boxes = state
-        box_tuples = tuple(
-            (box['min_x'], box['min_y'], box['max_x'], box['max_y'])
-            for box in boxes
-        )
-        return hash(box_tuples)
+    def get_box_type(self, box_idx):
+        """检查box是否为边界box和四面邻接情况
+        
+        Args:
+            box_idx (int): box的索引
 
-    def update_q_table(self, state, action, reward, next_state):
-        """更新Q表,根据box类型选择动作空间"""
-        state_hash = self._get_state_hash(state)
-        next_state_hash = self._get_state_hash(next_state)
+        Returns:
+            tuple: (is_extreme, all_adjacent, free_edges)
+                - is_extreme (bool): 是否是边界box
+                - all_adjacent (bool): 是否四面均有邻接
+                - free_edges (dict): 每个边的空闲状态
+        """
+        box = self.env.boxes[box_idx]
         
-        # 获取next_state中每个box可用的动作
-        next_actions = []
-        for i in range(len(self.env.boxes)):
-            is_extreme, all_adjacent, free_edges = self.get_box_type(i)
-            if is_extreme:
-                # 边界box的expand/shrink动作
-                for direction, is_free in free_edges.items():
-                    if is_free:
-                        next_actions.extend([
-                            (i, f"shrink_{direction}", None),
-                            (i, f"expand_{direction}", None)
-                        ])
-            elif all_adjacent:
-                # 四面邻接box的合并动作
-                mergeable = self.env.find_mergeable_boxes(i)
-                for target_idx, _ in mergeable:
-                    next_actions.append((i, "merge", target_idx))
+        # 判断是否是边界box(是否具有极值坐标)
+        min_x = min(b['min_x'] for b in self.env.boxes)
+        max_x = max(b['max_x'] for b in self.env.boxes)
+        min_y = min(b['min_y'] for b in self.env.boxes)
+        max_y = max(b['max_y'] for b in self.env.boxes)
         
-        # 计算最大Q值
-        max_next_q = max(
-            [self.q_table.get((next_state_hash, next_action), 0) 
-             for next_action in next_actions],
-            default=0)
+        is_extreme = (box['min_x'] == min_x or box['max_x'] == max_x or 
+                     box['min_y'] == min_y or box['max_y'] == max_y)
         
-        old_q = self.q_table.get((state_hash, action), 0)
-        new_q = old_q + self.alpha * (reward + self.gamma * max_next_q - old_q)
-        self.q_table[(state_hash, action)] = new_q
+        # 检查四个方向的邻接情况
+        free_edges = self.env.check_box_adjacency(box_idx)
+        all_adjacent = not any(free_edges.values())  # 四面均有邻接
+        
+        return is_extreme, all_adjacent, free_edges
 
-    def replay(self):
-        """从记忆中回放经验"""
+    def optimize(self):
         if len(self.memory) < self.batch_size:
             return
+            
+        transitions = random.sample(self.memory, self.batch_size)
         
-        batch = random.sample(self.memory, self.batch_size)
-        for state, action, reward, next_state in batch:
-            self.update_q_table(state, action, reward, next_state)
+        state_batch = torch.stack([t[0] for t in transitions])
+        # 修复action_batch的创建
+        action_batch = torch.zeros((self.batch_size, len(self.actions)), device=self.device)
+        for i, transition in enumerate(transitions):
+            action_idx = self.actions.index(transition[1][1])  # 获取动作在actions列表中的索引
+            action_batch[i][action_idx] = 1.0
+        
+        reward_batch = torch.tensor([t[2] for t in transitions], device=self.device)
+        next_state_batch = torch.stack([t[3] for t in transitions])
+        
+        current_q_values = (self.policy_net(state_batch) * action_batch).sum(dim=1)
+        
+        with torch.no_grad():
+            next_q_values = self.target_net(next_state_batch).max(1)[0]
+            
+        expected_q_values = reward_batch + self.gamma * next_q_values
+        
+        loss = self.criterion(current_q_values, expected_q_values)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 100)
+        self.optimizer.step()
+
+    def update_target_network(self):
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    def replay(self):
+        self.optimize()
 
     def replay_best(self):
-        """从最佳记忆中回放经验"""
         if len(self.best_memory) < self.batch_size:
             return
-        
-        batch = random.sample(self.best_memory, self.batch_size)
-        for state, action, reward, next_state in batch:
-            self.update_q_table(state, action, reward, next_state) 
+        old_memory = self.memory
+        self.memory = self.best_memory
+        self.optimize()
+        self.memory = old_memory

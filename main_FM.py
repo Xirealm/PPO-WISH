@@ -8,6 +8,7 @@ from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 import networkx as nx
+import json
 
 # Set paths for feature matching and segmentation modules
 generate_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'feature_matching'))
@@ -45,7 +46,7 @@ Q_TABLE_PATH = os.path.join(BASE_DIR, 'model', 'best_q_table.pkl')
 IMAGE_DIR = os.path.join(DATA_DIR, 'target_images')  # Path for test images
 RESULTS_DIR = os.path.join(BASE_DIR, 'results', DATASET, CATAGORY)
 SAVE_DIR = os.path.join(RESULTS_DIR, 'masks')
-FINAL_PROMPTS_DIR = os.path.join(RESULTS_DIR, 'final_prompts_image')  # 新增保存最终提示的目录
+FINAL_PROMPTS_DIR = os.path.join(RESULTS_DIR, 'final_prompts_image')  # 保存最终提示的目录
 
 # Ensure the results directories exist
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -67,7 +68,7 @@ def load_models():
 # Load multi-agent system
 def load_agents():
     """
-    Load node and box agents.
+    Load node and box agents from model directory.
     """
     try:
         node_env = NodeOptimizationEnv
@@ -75,18 +76,34 @@ def load_agents():
         node_agent = NodeAgent(node_env)
         box_agent = BoxAgent(box_env)
         
-        # Load trained models
-        node_agent.q_table = torch.load(os.path.join(BASE_DIR, 'model', 'node_best_q_table.pkl'), weights_only=False)
-        box_agent.q_table = torch.load(os.path.join(BASE_DIR, 'model', 'box_best_q_table.pkl'), weights_only=False)
+        # 从model目录加载模型
+        node_model_path = os.path.join(BASE_DIR, 'model', 'node_best_model.pkl')
+        box_model_path = os.path.join(BASE_DIR, 'model', 'box_best_model.pkl')
+             
+        print(f"从model目录加载模型...")
+        node_agent.policy_net.load_state_dict(torch.load(node_model_path))
+        box_agent.policy_net.load_state_dict(torch.load(box_model_path))
+        
+        # 设置为评估模式
+        node_agent.policy_net.eval()
+        box_agent.policy_net.eval()
+        
+        # 禁用智能体的探索行为
+        node_agent.epsilon = 0.0
+        box_agent.epsilon = 0.0
+        
+        # 加载性能指标（如果存在）
+        metrics_path = os.path.join(BASE_DIR, 'model', 'performance_metrics.json')
+        if os.path.exists(metrics_path):
+            with open(metrics_path, 'r') as f:
+                metrics = json.load(f)
+                print(f"加载的模型性能指标: {metrics}")
         
         return node_agent, box_agent
+        
     except Exception as e:
-        print(f"Error loading agents: {e}")
-        # Fallback to using only node agent
-        node_env = NodeOptimizationEnv
-        node_agent = NodeAgent(node_env)
-        node_agent.q_table = torch.load(Q_TABLE_PATH, weights_only=False)
-        return node_agent, None
+        print(f"加载智能体模型失败: {e}")
+        sys.exit(1)
 
 # Process a single image
 def process_single_image(node_agent, box_agent, model_dino, model_seg, image_name, reference, mask_dir):
@@ -163,34 +180,57 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
 
             # 使用多box系统优化
             if box_agent is not None:
+                print(f"开始使用DQN多智能体系统优化点集和矩形框...")
                 multi_env = MultiAgentEnv(G, box_data, IMAGE_SIZE, max_steps=100)
                 node_agent.env = multi_env.node_env
                 box_agent.env = multi_env.box_env
                 
                 # 设置特征信息
+                multi_env.node_env.features = features
                 multi_env.box_env.features = features
                 
                 state = multi_env.reset()
                 done = False
                 
+                # 确保智能体处于评估模式
+                node_agent.policy_net.eval()
+                box_agent.policy_net.eval()
+                
+                # 禁用随机探索
+                node_epsilon = node_agent.epsilon
+                box_epsilon = box_agent.epsilon
+                node_agent.epsilon = 0.0
+                box_agent.epsilon = 0.0
+                
                 # Alternate execution of node agent and box agent actions
                 step_count = 0
-                while not done:
-                    if step_count % 2 == 0:  # Even step executes node agent action
-                        node_action = node_agent.get_action(state["node"])
-                        action_dict = {"node": node_action}
-                    else:  # Odd step executes box agent action
-                        box_action = box_agent.get_action(state["box"])
-                        action_dict = {"box": box_action}
-                    
-                    next_state, _, done = multi_env.step(action_dict)
-                    state = next_state
-                    step_count += 1
+                with torch.no_grad():  # 在评估时不需要计算梯度
+                    while not done:
+                        if step_count % 2 == 0:  # Even step executes node agent action
+                            node_action = node_agent.get_action(state["node"])
+                            action_dict = {"node": node_action}
+                        else:  # Odd step executes box agent action
+                            box_action = box_agent.get_action(state["box"])
+                            action_dict = {"box": box_action}
+                        
+                        next_state, _, done = multi_env.step(action_dict)
+                        state = next_state
+                        step_count += 1
+                        
+                        if step_count % 10 == 0:
+                            print(f"已完成 {step_count} 步优化")
+                            
+                # 恢复智能体原始epsilon值
+                node_agent.epsilon = node_epsilon
+                box_agent.epsilon = box_epsilon
                 
                 # Get optimized prompts and bounding box
                 opt_pos_indices = torch.tensor([node for node in multi_env.node_env.pos_nodes])
                 opt_neg_indices = torch.tensor([node for node in multi_env.node_env.neg_nodes])
                 optimized_boxes = multi_env.box_env.boxes
+                
+                print(f"优化完成! 正向点数量: {len(opt_pos_indices)}, 负向点数量: {len(opt_neg_indices)}")
+                print(f"优化后的矩形框数量: {len(optimized_boxes)}")
                 
                 # 合并所有优化后的box为最终box
                 final_box = {
@@ -270,6 +310,8 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
             print(f"Skipping {image_name}: No positive or negative indices found.")
     except Exception as e:
         print(f"Error processing {image_name}: {e}")
+        import traceback
+        traceback.print_exc()
 
 # Main function
 if __name__ == "__main__":

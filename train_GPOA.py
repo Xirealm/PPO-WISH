@@ -30,6 +30,13 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         rewards: 每回合的奖励列表
     """
     rewards = []
+    best_performance = {
+        'reward': float('-inf'),
+        'pos_feature_sim': float('inf'),
+        'cross_feature_sim': float('-inf'),
+        'pos_ratio_in_box': 0,
+        'neg_ratio_out_box': 0
+    }
     image_size = SIZE
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(output_path, exist_ok=True)  # 创建输出目录
@@ -136,42 +143,41 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
             box_agent.epsilon = 1 - normalized_reward
         print(f"best_reward:{node_agent.best_reward},node_epsilon:{node_agent.epsilon},box_epsilon:{box_agent.epsilon}")
 
-        # 训练循环 - 交替执行节点智能体和矩形框智能体的动作
+        # 训练循环 - 交替执行节点智能体和矩形框智能体的动作  
         step_count = 0
         while not done:
-            # 在每个时间步，决定要执行的智能体
+            # 在每个时间步,决定要执行的智能体
             if step_count % 2 == 0:  # 偶数步执行节点智能体动作
+                state_tensor = node_agent._get_state_features(state["node"])
                 node_action = node_agent.get_action(state["node"])
                 action_dict = {"node": node_action}
                 next_state, reward, done = multi_env.step(action_dict)
                 
-                # 更新节点智能体Q表和记忆
-                node_agent.memory.append((state["node"], node_action, reward, next_state["node"]))
-                node_agent.update_q_table(state["node"], node_action, reward, next_state["node"])
+                # 更新节点智能体记忆和网络
+                next_state_tensor = node_agent._get_state_features(next_state["node"])
+                node_agent.memory.append((state_tensor, node_action, reward, next_state_tensor))
                 node_agent.replay()
-                
-                # 同步特征
-                multi_env.box_env.features = multi_env.node_env.features
             else:  # 奇数步执行矩形框智能体动作
+                state_tensor = box_agent._get_state_features(state["box"])
                 box_action = box_agent.get_action(state["box"])
                 action_dict = {"box": box_action}
-                print(f"Box action: {box_action}")
                 next_state, reward, done = multi_env.step(action_dict)
                 
-                # 更新矩形框智能体Q表和记忆
-                box_agent.memory.append((state["box"], box_action, reward, next_state["box"]))
-                box_agent.update_q_table(state["box"], box_action, reward, next_state["box"])
+                # 更新矩形框智能体记忆和网络  
+                next_state_tensor = box_agent._get_state_features(next_state["box"])
+                box_agent.memory.append((state_tensor, box_action, reward, next_state_tensor))
                 box_agent.replay()
             
             state = next_state
             total_reward += reward
             step_count += 1
             
-            # 更新探索率
-            node_agent.update_epsilon()
-            box_agent.update_epsilon()
+            # 更新目标网络
+            if step_count % 100 == 0:
+                node_agent.update_target_network()
+                box_agent.update_target_network()
 
-        # 如果当前回合表现更好，更新最佳记录
+        # 如果当前回合表现更好，更新最佳记录和保存最大reward模型
         print(f"Total reward: {total_reward}, Best reward: {node_agent.best_reward}")
         if total_reward > node_agent.best_reward:
             node_agent.best_reward = total_reward
@@ -181,62 +187,44 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
             node_agent.replay_best()
             box_agent.replay_best()
 
+            # 保存最佳模型到output_path
+            model_path = os.path.join(output_path, 'best_models')
+            os.makedirs(model_path, exist_ok=True)
+            
+            # 保存完整模型状态
+            torch.save({
+                'node_policy_net': node_agent.policy_net.state_dict(),
+                'box_policy_net': box_agent.policy_net.state_dict(),
+                'node_target_net': node_agent.target_net.state_dict(),
+                'box_target_net': box_agent.target_net.state_dict(),
+                'node_optimizer': node_agent.optimizer.state_dict(),
+                'box_optimizer': box_agent.optimizer.state_dict(),
+                'performance_metrics': best_performance,
+                'episode': episode
+            }, os.path.join(model_path, 'best_model.pt'))
+            
+            # 保存单独的模型文件到output_path的model目录
+            output_model_dir = os.path.join(output_path, 'model')
+            os.makedirs(output_model_dir, exist_ok=True)
+            torch.save(node_agent.policy_net.state_dict(), os.path.join(output_model_dir, 'node_best_model.pkl'))
+            torch.save(box_agent.policy_net.state_dict(), os.path.join(output_model_dir, 'box_best_model.pkl'))
+            
+            print(f'Updated best model at episode {episode}')
+            print(f'Performance metrics: {best_performance}')
+            
+            # 保存性能指标到output_path
+            with open(os.path.join(output_model_dir, 'performance_metrics.json'), 'w') as f:
+                json.dump(best_performance, f, indent=4)
+
         # 保存训练结果
         rewards.append(total_reward)
         save_multi_agent_results(node_agent, box_agent, episode, total_reward, output_path, selected_prefix)
-
-        # 计算最终评估指标
-        mean_feature_pos = np.mean(list(nx.get_edge_attributes(multi_env.node_env.G, 'feature_pos').values()))
-        mean_feature_cross = np.mean(list(nx.get_edge_attributes(multi_env.node_env.G, 'feature_cross').values()))
-        pos_ratio_in_box = multi_env.box_env.calculate_pos_ratio_in_box()
-        neg_ratio_out_box = multi_env.box_env.calculate_neg_ratio_out_box()
-        
-        print(f"Episode {episode + 1}/{episodes}, Reward: {total_reward}")
-        print(f"Node metrics - Final pos: {mean_feature_pos}, Final cross: {mean_feature_cross}")
-        print(f"Box metrics - Pos ratio in box: {pos_ratio_in_box}, Neg ratio out box: {neg_ratio_out_box}")
-
-        # 打印box相关指标
-        print(f"Number of boxes: {len(multi_env.box_env.boxes)}")
-        for i, box in enumerate(multi_env.box_env.boxes):
-            box_features = multi_env.box_env.get_box_features(i)
-            if box_features is not None:
-                print(f"Box {i} features shape: {box_features.shape}")
-                inner_sim = multi_env.box_env.calculate_similarity(box_features)
-                print(f"Box {i} inner similarity: {inner_sim:.4f}")
-            else:
-                print(f"Box {i} is empty")
 
         # 计算并显示时间信息
         elapsed_time = time.time() - start_time
         estimated_total_time = elapsed_time * (episodes / (episode + 1))
         remaining_time = estimated_total_time - elapsed_time
         print(f"Elapsed Time: {timedelta(seconds=int(elapsed_time))}, Estimated Total Time: {timedelta(seconds=int(estimated_total_time))}, Remaining Time: {timedelta(seconds=int(remaining_time))}")
-
-        # 更新并保存最佳模型
-        if (mean_feature_pos < node_agent.best_pos and 
-            mean_feature_cross > node_agent.best_cross and
-            pos_ratio_in_box > 0.6 and
-            neg_ratio_out_box > 0.6):
-            print('Update best model!')
-            node_agent.best_pos = mean_feature_pos
-            node_agent.best_cross = mean_feature_cross
-            node_agent.best_q_table = node_agent.q_table.copy()
-            box_agent.best_q_table = box_agent.q_table.copy()
-            save_multi_agent_best_q_table(node_agent, box_agent, output_path)
-
-        # 保存不同指标下的最佳模型
-        if total_reward > node_agent.best_reward_save:
-            node_agent.best_reward_save = total_reward
-            box_agent.best_reward_save = total_reward
-            save_multi_agent_best_model(node_agent, box_agent, output_path, 'best_reward_model.pkl')
-
-        if mean_feature_pos < node_agent.best_pos_feature_distance:
-            node_agent.best_pos_feature_distance = mean_feature_pos
-            save_best_model(node_agent, output_path, 'best_pos_feature_distance_model.pkl')
-
-        if mean_feature_cross > node_agent.best_cross_feature_distance:
-            node_agent.best_cross_feature_distance = mean_feature_cross
-            save_best_model(node_agent, output_path, 'best_cross_feature_distance_model.pkl')
 
         # 输出最终节点统计信息
         final_pos_count = len(multi_env.node_env.pos_nodes)
@@ -247,60 +235,36 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         for i, box in enumerate(final_boxes):
             print(f"Final box {i}: {box}")
 
-    return rewards
+    return rewards, best_performance
 
 def save_multi_agent_results(node_agent, box_agent, episode, reward, output_path, prefix):
     """保存多智能体训练结果"""
     node_state = node_agent.env.get_state()
-    box_state, boxes = box_agent.env.get_state()  # 修改这里，现在返回的是boxes列表
+    box_state, boxes = box_agent.env.get_state()
     
     pos_nodes = [node for node, data in node_state.nodes(data=True) if data['category'] == 'pos']
     neg_nodes = [node for node, data in node_state.nodes(data=True) if data['category'] == 'neg']
 
-    with open(f"{output_path}/{prefix}_rewards.txt", "a") as f:
+    # 保存每个episode的训练结果
+    episode_dir = os.path.join(output_path, 'episode_results')
+    os.makedirs(episode_dir, exist_ok=True)
+    result_path = os.path.join(episode_dir, f'episode_{episode}')
+    os.makedirs(result_path, exist_ok=True)
+
+    # 保存模型状态
+    torch.save(node_agent.policy_net.state_dict(), 
+              os.path.join(result_path, f'node_policy_net_ep{episode}.pkl'))
+    torch.save(box_agent.policy_net.state_dict(), 
+              os.path.join(result_path, f'box_policy_net_ep{episode}.pkl'))
+
+    # 保存训练信息
+    with open(os.path.join(result_path, f"{prefix}_info.txt"), "w") as f:
         f.write(f"Episode {episode}: Reward: {reward}\n")
         f.write(f"Positive nodes: {len(pos_nodes)}, Negative nodes: {len(neg_nodes)}\n")
         f.write(f"Number of boxes: {len(boxes)}\n")
         for i, box in enumerate(boxes):
             f.write(f"Box {i}: {box}\n")
         f.write("\n")
-
-def save_multi_agent_best_q_table(node_agent, box_agent, output_path):
-    """保存最佳Q表"""
-    with open(f"{output_path}/node_best_q_table.pkl", "wb") as f:
-        torch.save(node_agent.best_q_table, f)
-    with open(f"{output_path}/box_best_q_table.pkl", "wb") as f:
-        torch.save(box_agent.best_q_table, f)
-
-def save_multi_agent_best_model(node_agent, box_agent, output_path, filename):
-    """保存多智能体最佳模型"""
-    with open(f"{output_path}/node_{filename}", "wb") as f:
-        torch.save(node_agent.q_table, f)
-    with open(f"{output_path}/box_{filename}", "wb") as f:
-        torch.save(box_agent.q_table, f)
-        
-    # 保存最优Q表时同时也记录状态
-    state_info = {
-        'node_best_reward': node_agent.best_reward,
-        'box_best_reward': box_agent.best_reward,
-        'node_best_pos': node_agent.best_pos,
-        'node_best_cross': node_agent.best_cross
-    }
-    with open(f"{output_path}/best_state_info.json", 'w') as f:
-        json.dump(state_info, f)
-    
-    print(f"Best multi-agent model saved with reward: {node_agent.best_reward}")
-
-def save_best_q_table(agent, output_path):
-    """Save the best Q-table."""
-    with open(f"{output_path}/best_q_table.pkl", "wb") as f:
-        torch.save(agent.best_q_table, f)
-
-def save_best_model(agent, output_path, filename):
-    """Save the best model based on the highest reward."""
-    with open(f"{output_path}/{filename}", "wb") as f:
-        torch.save(agent.q_table, f)
-    print(f"Best model saved with reward: {agent.best_reward}")
 
 def main():
     """Main function to train the multi-agent system."""
@@ -311,7 +275,27 @@ def main():
     # 提取文件名前缀（前三个下划线分隔的部分）
     file_prefixes = set('_'.join(f.split('_')[:3]) for f in files)
     # 训练参数设置
-    max_steps = 100 # 每个episode的最大步数
+    episodes = 10  # 训练回合数
+    max_steps = 100  # 每个episode的最大步数
+    
+    # 创建输出目录结构
+    current_time = datetime.now().strftime("%Y%m%d_%H%M")
+    output_path = os.path.join(os.path.dirname(__file__), 'train', current_time)
+    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(os.path.join(output_path, 'episode_results'), exist_ok=True)
+    os.makedirs(os.path.join(output_path, 'best_models'), exist_ok=True)
+    os.makedirs(os.path.join(output_path, 'model'), exist_ok=True)
+    
+    # 保存训练配置
+    config = {
+        'episodes': episodes,
+        'max_steps': max_steps,
+        'dataset': DATASET,
+        'category': CATAGORY,
+        'image_size': SIZE
+    }
+    with open(os.path.join(output_path, 'config.json'), 'w') as f:
+        json.dump(config, f)
     
     # 初始化节点智能体和矩形框智能体
     node_env = NodeOptimizationEnv
@@ -319,29 +303,72 @@ def main():
     node_agent = NodeAgent(node_env)
     box_agent = BoxAgent(box_env)
     
-    # 创建输出目录
-    current_time = datetime.now().strftime("%Y%m%d_%H%M") # 当前时间
-    output_path = os.path.join(os.path.dirname(__file__), 'train', current_time) # 输出目录
+    # 尝试加载已有模型，如果存在的话
+    try:
+        node_model_path = os.path.join(output_path, 'model', 'node_best_model.pkl')
+        box_model_path = os.path.join(output_path, 'model', 'box_best_model.pkl')
+        
+        if os.path.exists(node_model_path) and os.path.exists(box_model_path):
+            print("加载已有的模型继续训练...")
+            node_agent.policy_net.load_state_dict(torch.load(node_model_path))
+            node_agent.target_net.load_state_dict(torch.load(node_model_path))
+            box_agent.policy_net.load_state_dict(torch.load(box_model_path))
+            box_agent.target_net.load_state_dict(torch.load(box_model_path))
+            
+            # 加载性能指标
+            if os.path.exists(os.path.join(output_path, 'model', 'performance_metrics.json')):
+                with open(os.path.join(output_path, 'model', 'performance_metrics.json'), 'r') as f:
+                    metrics = json.load(f)
+                    node_agent.best_reward = metrics.get('reward', node_agent.best_reward)
+                    box_agent.best_reward = metrics.get('reward', box_agent.best_reward)
+    except Exception as e:
+        print(f"加载模型失败: {e}，将使用新模型开始训练")
     
     # 训练多智能体系统
-    rewards = train_multi_agent(
+    rewards, best_performance = train_multi_agent(
         node_agent, 
         box_agent, 
-        episodes=10,
+        episodes=episodes,
         output_path=output_path, 
         base_dir=base_dir, 
         file_prefixes=file_prefixes, 
         max_steps=max_steps
     )
     
-    # 绘制训练奖励曲线
+    # 保存训练结果，包括最佳性能信息
+    training_info = {
+        'rewards': rewards,
+        'best_performance': best_performance,
+        'timestamps': [str(datetime.now())]
+    }
+    torch.save(training_info, os.path.join(output_path, 'training_info.pt'))
+    
+    # 保存最终模型状态到output_path
+    torch.save({
+        'node_policy_net': node_agent.policy_net.state_dict(),
+        'box_policy_net': box_agent.policy_net.state_dict(),
+        'node_target_net': node_agent.target_net.state_dict(),
+        'box_target_net': box_agent.target_net.state_dict(),
+        'node_optimizer': node_agent.optimizer.state_dict(),
+        'box_optimizer': box_agent.optimizer.state_dict(),
+        'performance_metrics': best_performance,
+        'episode': episodes - 1
+    }, os.path.join(output_path, 'final_model.pt'))
+    
+    # 保存最终模型的单文件版本到output_path
+    output_model_dir = os.path.join(output_path, 'model')
+    os.makedirs(output_model_dir, exist_ok=True)
+    torch.save(node_agent.policy_net.state_dict(), os.path.join(output_model_dir, 'node_final_model.pkl'))
+    torch.save(box_agent.policy_net.state_dict(), os.path.join(output_model_dir, 'box_final_model.pkl'))
+    
     import matplotlib.pyplot as plt
+    plt.figure(figsize=(10, 5))
     plt.plot(rewards)
     plt.xlabel('Episode')
     plt.ylabel('Reward')
     plt.title('Multi-Agent Training Rewards Over Episodes')
-    plt.savefig(f"{output_path}/rewards_plot.png")
-    plt.show()
+    plt.savefig(os.path.join(output_path, "rewards_plot.png"))
+    plt.close()
 
 if __name__ == "__main__":
     main()

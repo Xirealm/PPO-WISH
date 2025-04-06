@@ -1,71 +1,112 @@
 import random
 import numpy as np
 import networkx as nx
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from collections import defaultdict, deque
 from agents.node_env import NodeOptimizationEnv
 
+class DQN(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(DQN, self).__init__()
+        self.layer1 = nn.Linear(state_dim, 128)
+        self.layer2 = nn.Linear(128, 128)
+        self.layer3 = nn.Linear(128, action_dim)
+        
+    def forward(self, x):
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(x, dtype=torch.float32)
+        x = F.relu(self.layer1(x))
+        x = F.relu(self.layer2(x))
+        return self.layer3(x)
+
 class NodeAgent:
-    def __init__(self, env:NodeOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.995, memory_size=10000, batch_size=64,reward_threshold=0.1):
+    def __init__(self, env:NodeOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0, 
+                 epsilon_end=0.1, epsilon_decay=0.995, memory_size=10000, batch_size=64):
         self.env = env
-        self.alpha = alpha
         self.gamma = gamma
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
         self.epsilon_decay = epsilon_decay
         self.epsilon = epsilon_start
-        self.q_table = defaultdict(float)
-        self.best_pos = 100
-        self.best_cross = 0
-        self.best_q_table = None
         self.memory = deque(maxlen=memory_size)
         self.best_memory = deque(maxlen=memory_size)
         self.batch_size = batch_size
-        self.reward_threshold = reward_threshold
-        self.last_reward = None
+        
+        # DQN networks
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.state_dim = 4  # [feature_pos, feature_cross, pos_count, neg_count]
+        self.action_dim = 4  # [remove_pos, remove_neg, restore_pos, restore_neg]
+        
+        self.policy_net = DQN(self.state_dim, self.action_dim).to(self.device)
+        self.target_net = DQN(self.state_dim, self.action_dim).to(self.device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+        self.optimizer = torch.optim.Adam(self.policy_net.parameters())
+        self.criterion = nn.SmoothL1Loss()
+        
+        # Metrics
         self.best_reward = -float('inf')
         self.best_reward_save = -float('inf')
+        self.best_pos = 100
+        self.best_cross = 0
         self.best_pos_feature_distance = float('inf')
         self.best_cross_feature_distance = float('inf')
 
-    def update_epsilon(self):
-        """Update the epsilon value based on a decay factor."""
-        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
-
-    def _get_state_hash(self, state):
-        # 提取图的关键特征作为状态
-        pos_nodes = sorted([n for n, d in state.nodes(data=True) if d['category'] == 'pos'])
-        neg_nodes = sorted([n for n, d in state.nodes(data=True) if d['category'] == 'neg'])
-        
-        # 计算特征距离的平均值
+    def _get_state_features(self, state):
+        # 提取图的特征作为状态向量
         feature_pos = np.mean(list(nx.get_edge_attributes(state, 'feature_pos').values())) if nx.get_edge_attributes(state, 'feature_pos') else 0
         feature_cross = np.mean(list(nx.get_edge_attributes(state, 'feature_cross').values())) if nx.get_edge_attributes(state, 'feature_cross') else 0
+        pos_count = len([n for n, d in state.nodes(data=True) if d['category'] == 'pos'])
+        neg_count = len([n for n, d in state.nodes(data=True) if d['category'] == 'neg'])
         
-        # 组合状态特征
-        state_tuple = (
-            tuple(pos_nodes),
-            tuple(neg_nodes),
-            round(feature_pos, 4),
-            round(feature_cross, 4)
-        )
-        return hash(state_tuple)
+        return torch.tensor([feature_pos, feature_cross, pos_count/100, neg_count/100], 
+                          device=self.device, dtype=torch.float32)
+
+    def update_epsilon(self):
+        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
     def get_action(self, state):
-        """Select an action based on epsilon-greedy policy."""
         actions = self.get_possible_actions(state)
-
+        if not actions:
+            return None, None  # 无可用动作
+            
+        state_tensor = self._get_state_features(state)
+        
         if random.random() < self.epsilon:
             action = random.choice(actions)
         else:
-            # 使用哈希后的状态查询Q值
-            state_hash = self._get_state_hash(state)
-            q_values = {action: self.q_table.get((state_hash, action), 0) for action in actions}
-            max_q = max(q_values.values())
-            action = random.choice([action for action, q in q_values.items() if q == max_q])  
+            with torch.no_grad():
+                q_values = self.policy_net(state_tensor)
+                # 只考虑可用动作的Q值
+                action_mask = torch.zeros(self.action_dim, device=self.device)
+                for act in actions:
+                    act_type = act[1]
+                    if "remove_pos" in act_type:
+                        action_mask[0] = 1
+                    elif "remove_neg" in act_type:
+                        action_mask[1] = 1
+                    elif "restore_pos" in act_type:
+                        action_mask[2] = 1
+                    elif "restore_neg" in act_type:
+                        action_mask[3] = 1
+                        
+                q_values = q_values * action_mask - 1e9 * (1 - action_mask)
+                action_idx = q_values.argmax().item()
+                
+                # 将action_idx映射回实际action
+                for act in actions:
+                    if ("remove_pos" in act[1] and action_idx == 0) or \
+                       ("remove_neg" in act[1] and action_idx == 1) or \
+                       ("restore_pos" in act[1] and action_idx == 2) or \
+                       ("restore_neg" in act[1] and action_idx == 3):
+                        action = act
+                        break
 
         return action
 
     def get_possible_actions(self, state):
-        """Get the possible actions for the current state."""
         actions = []
 
         restore_pos_actions = [
@@ -97,7 +138,6 @@ class NodeAgent:
             actions.extend(restore_neg_actions)
             actions.extend(remove_pos_actions)
             actions.extend(remove_neg_actions)
-            # actions.extend([(node, "add") for node in range(state.number_of_nodes(), state.number_of_nodes() + 10)])
         else:
             if pos_nodes_count <= self.env.min_nodes:
                 actions.extend(restore_pos_actions)
@@ -111,32 +151,45 @@ class NodeAgent:
 
         return actions
 
-    def update_q_table(self, state, action, reward, next_state):
-        """Update the Q-table based on the current state, action, reward, and next state."""
-        state_hash = self._get_state_hash(state)
-        next_state_hash = self._get_state_hash(next_state)
-        
-        max_next_q = max(
-            [self.q_table.get((next_state_hash, next_action), 0) for next_action in self.get_possible_actions(next_state)],
-            default=0)
-        old_q = self.q_table.get((state_hash, action), 0)
-        new_q = old_q + self.alpha * (reward + self.gamma * max_next_q - old_q)
-        self.q_table[(state_hash, action)] = new_q
-
-    def replay(self):
-        """Replay experiences from memory to update Q-table."""
+    def optimize(self):
         if len(self.memory) < self.batch_size:
             return
+            
+        transitions = random.sample(self.memory, self.batch_size)
+        
+        state_batch = torch.stack([t[0] for t in transitions])
+        action_batch = torch.tensor([[t[1][1].startswith("remove_pos"),
+                                    t[1][1].startswith("remove_neg"),
+                                    t[1][1].startswith("restore_pos"),
+                                    t[1][1].startswith("restore_neg")] 
+                                   for t in transitions], device=self.device).float()
+        reward_batch = torch.tensor([t[2] for t in transitions], device=self.device)
+        next_state_batch = torch.stack([t[3] for t in transitions])
+        
+        current_q_values = (self.policy_net(state_batch) * action_batch).sum(dim=1)
+        
+        with torch.no_grad():
+            next_q_values = self.target_net(next_state_batch).max(1)[0]
+        
+        expected_q_values = reward_batch + self.gamma * next_q_values
+        
+        loss = self.criterion(current_q_values, expected_q_values)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 100)
+        self.optimizer.step()
 
-        batch = random.sample(self.memory, self.batch_size)
-        for state, action, reward, next_state in batch:
-            self.update_q_table(state, action, reward, next_state)
+    def update_target_network(self):
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    def replay(self):
+        self.optimize()
 
     def replay_best(self):
-        """Replay best experiences from memory to update Q-table."""
         if len(self.best_memory) < self.batch_size:
             return
-
-        batch = random.sample(self.best_memory, self.batch_size)
-        for state, action, reward, next_state in batch:
-            self.update_q_table(state, action, reward, next_state) 
+        old_memory = self.memory
+        self.memory = self.best_memory
+        self.optimize()
+        self.memory = old_memory
