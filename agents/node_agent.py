@@ -12,17 +12,17 @@ class DQN(nn.Module):
         super(DQN, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(state_dim, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256),  
             nn.ReLU(),
             nn.Dropout(0.1),
             
             nn.Linear(256, 512),
-            nn.BatchNorm1d(512),
+            nn.LayerNorm(512), 
             nn.ReLU(),
             nn.Dropout(0.1),
             
             nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256),  
             nn.ReLU(),
             nn.Dropout(0.1),
             
@@ -32,14 +32,13 @@ class DQN(nn.Module):
     def forward(self, x):
         if not isinstance(x, torch.Tensor):
             x = torch.tensor(x, dtype=torch.float32)
-        # 确保输入是2D张量 [batch_size, features]
         if x.dim() == 1:
-            x = x.unsqueeze(0)  # 添加batch维度
-        return self.network(x).squeeze(0)  # 如果是单个样本，移除batch维度
+            x = x.unsqueeze(0)
+        out = self.network(x)
+        return out.squeeze(0) if out.size(0) == 1 else out
 
 class NodeAgent:
-    def __init__(self, env:NodeOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0, 
-                 epsilon_end=0.1, epsilon_decay=0.995, memory_size=10000, batch_size=64):
+    def __init__(self, env:NodeOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.995, memory_size=10000, batch_size=64):
         self.env = env
         self.alpha = alpha
         self.gamma = gamma

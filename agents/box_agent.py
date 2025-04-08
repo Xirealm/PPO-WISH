@@ -8,27 +8,42 @@ from agents.box_env import BoxOptimizationEnv
 class DQN(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(DQN, self).__init__()
-        self.layer1 = nn.Linear(state_dim, 128)
-        self.layer2 = nn.Linear(128, 128)
-        self.layer3 = nn.Linear(128, action_dim)
+        self.network = nn.Sequential(
+            nn.Linear(state_dim, 256),
+            nn.LayerNorm(256),  
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            
+            nn.Linear(256, 512),
+            nn.LayerNorm(512), 
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            
+            nn.Linear(512, 256),
+            nn.LayerNorm(256),  
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            
+            nn.Linear(256, action_dim)
+        )
         
     def forward(self, x):
         if not isinstance(x, torch.Tensor):
             x = torch.tensor(x, dtype=torch.float32)
-        x = F.relu(self.layer1(x))
-        x = F.relu(self.layer2(x))
-        return self.layer3(x)
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        out = self.network(x)
+        return out.squeeze(0) if out.size(0) == 1 else out
 
 class BoxAgent:
-    def __init__(self, env:BoxOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0,
-                 epsilon_end=0.1, epsilon_decay=0.995):
+    def __init__(self, env:BoxOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0, epsilon_end=0.1, epsilon_decay=0.995):
         # 首先定义动作空间
-        self.edge_actions = ["shrink_up", "shrink_down", "shrink_left", "shrink_right",
-                           "expand_up", "expand_down", "expand_left", "expand_right"]
+        self.edge_actions = ["shrink_up", "shrink_down", "shrink_left", "shrink_right","expand_up", "expand_down", "expand_left", "expand_right"]
         self.merge_action = ["merge"]
         self.actions = self.edge_actions + self.merge_action
         
         self.env = env
+        self.alpha = alpha
         self.gamma = gamma
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
@@ -44,7 +59,7 @@ class BoxAgent:
         self.target_net = DQN(self.state_dim, self.action_dim).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         
-        self.optimizer = torch.optim.Adam(self.policy_net.parameters())
+        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.alpha)
         self.criterion = nn.SmoothL1Loss()
         
         self.memory = deque(maxlen=10000)
