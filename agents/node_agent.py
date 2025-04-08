@@ -10,21 +10,38 @@ from agents.node_env import NodeOptimizationEnv
 class DQN(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(DQN, self).__init__()
-        self.layer1 = nn.Linear(state_dim, 128)
-        self.layer2 = nn.Linear(128, 128)
-        self.layer3 = nn.Linear(128, action_dim)
+        self.network = nn.Sequential(
+            nn.Linear(state_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            
+            nn.Linear(256, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            
+            nn.Linear(256, action_dim)
+        )
         
     def forward(self, x):
         if not isinstance(x, torch.Tensor):
             x = torch.tensor(x, dtype=torch.float32)
-        x = F.relu(self.layer1(x))
-        x = F.relu(self.layer2(x))
-        return self.layer3(x)
+        # 确保输入是2D张量 [batch_size, features]
+        if x.dim() == 1:
+            x = x.unsqueeze(0)  # 添加batch维度
+        return self.network(x).squeeze(0)  # 如果是单个样本，移除batch维度
 
 class NodeAgent:
     def __init__(self, env:NodeOptimizationEnv, alpha=0.1, gamma=0.9, epsilon_start=1.0, 
                  epsilon_end=0.1, epsilon_decay=0.995, memory_size=10000, batch_size=64):
         self.env = env
+        self.alpha = alpha
         self.gamma = gamma
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
@@ -36,14 +53,14 @@ class NodeAgent:
         
         # DQN networks
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.state_dim = 4  # [feature_pos, feature_cross, pos_count, neg_count]
+        self.state_dim = 5  # [feature_pos, feature_cross, physical_pos, physical_neg, physical_cross]
         self.action_dim = 4  # [remove_pos, remove_neg, restore_pos, restore_neg]
         
         self.policy_net = DQN(self.state_dim, self.action_dim).to(self.device)
         self.target_net = DQN(self.state_dim, self.action_dim).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         
-        self.optimizer = torch.optim.Adam(self.policy_net.parameters())
+        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.alpha)
         self.criterion = nn.SmoothL1Loss()
         
         self.best_pos = 100
@@ -55,10 +72,11 @@ class NodeAgent:
         # 提取图的特征作为状态向量
         feature_pos = np.mean(list(nx.get_edge_attributes(state, 'feature_pos').values())) if nx.get_edge_attributes(state, 'feature_pos') else 0
         feature_cross = np.mean(list(nx.get_edge_attributes(state, 'feature_cross').values())) if nx.get_edge_attributes(state, 'feature_cross') else 0
-        pos_count = len([n for n, d in state.nodes(data=True) if d['category'] == 'pos'])
-        neg_count = len([n for n, d in state.nodes(data=True) if d['category'] == 'neg'])
+        physical_pos = np.mean(list(nx.get_edge_attributes(state, 'physical_pos').values())) if nx.get_edge_attributes(state, 'physical_pos') else 0
+        physical_neg = np.mean(list(nx.get_edge_attributes(state, 'physical_neg').values())) if nx.get_edge_attributes(state, 'physical_neg') else 0
+        physical_cross = np.mean(list(nx.get_edge_attributes(state, 'physical_cross').values())) if nx.get_edge_attributes(state, 'physical_cross') else 0
         
-        return torch.tensor([feature_pos, feature_cross, pos_count/100, neg_count/100], 
+        return torch.tensor([feature_pos, feature_cross, physical_pos, physical_neg, physical_cross], 
                           device=self.device, dtype=torch.float32)
 
     def update_epsilon(self):
@@ -100,7 +118,7 @@ class NodeAgent:
                        ("restore_neg" in act[1] and action_idx == 3):
                         action = act
                         break
-
+        print(f"Selected action: {action}")
         return action
 
     def get_possible_actions(self, state):
