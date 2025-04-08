@@ -172,18 +172,23 @@ class NodeOptimizationEnv:
         position_reward = 0
         
         # 获取在box内外的节点信息
-        box_info = get_box_node_indices(self.G, self.boxes)
-        outside_pos_indices = box_info[3]  # 获取box外正提示点
-        inside_neg_indices = box_info[4]  # 获取box内负提示点
+        (inside_indices, outside_indices,inside_pos_indices,outside_pos_indices,inside_neg_indices, outside_neg_indices) = get_box_node_indices(self.G, self.boxes)
         
         # 根据操作类型和位置给予不同的奖励
         if operation == "restore_pos":
             if len(outside_pos_indices) > 0:
-                position_reward -= 2 * (outside_pos_indices / len(self.G.nodes())) 
+                position_reward -= 2 * (len(outside_pos_indices) / len(list(self.G.nodes()))) 
                 
         if operation == "restore_neg":
             if len(inside_neg_indices) > 0:
-                position_reward -= 2 * (outside_pos_indices / len(self.G.nodes())) 
+                position_reward -= 2 * (len(inside_neg_indices) / len(list(self.G.nodes()))) 
+        if operation == "remove_pos":
+            if len(outside_pos_indices) == 0:
+                position_reward += 2 * (len(inside_pos_indices) / len(list(self.G.nodes()))) 
+                
+        if operation == "remove_neg":
+            if len(inside_neg_indices) == 0:
+                position_reward += 2 * (len(outside_neg_indices) / len(list(self.G.nodes()))) 
                 
         # 对每个box内的负样本数量进行检查和惩罚
         # box_counts = count_nodes_per_box(self.G, self.boxes)
