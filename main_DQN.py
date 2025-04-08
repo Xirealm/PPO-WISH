@@ -75,10 +75,15 @@ def load_agents():
         node_agent = NodeAgent(node_env)
         box_agent = BoxAgent(box_env)
         
+        # 初始化网络
+        dummy_features = torch.randn(1, 1)  # 创建一个临时特征张量用于初始化
+        node_agent.initialize_networks(dummy_features)
+        box_agent.initialize_networks(dummy_features)
+        
         # 从model目录加载模型
         node_model_path = os.path.join(BASE_DIR, 'model', 'node_final_model.pkl')
         box_model_path = os.path.join(BASE_DIR, 'model', 'box_final_model.pkl')
-        # node_model_path = os.path.join(BASE_DIR, 'model', 'node_best_model.pkl')
+# node_model_path = os.path.join(BASE_DIR, 'model', 'node_best_model.pkl')
         # box_model_path = os.path.join(BASE_DIR, 'model', 'box_best_model.pkl')
         node_agent.policy_net.load_state_dict(torch.load(node_model_path))
         box_agent.policy_net.load_state_dict(torch.load(box_model_path))
@@ -87,9 +92,9 @@ def load_agents():
         node_agent.policy_net.eval()
         box_agent.policy_net.eval()
         
-        # 禁用智能体的探索行为
-        node_agent.epsilon = 0.0
-        box_agent.epsilon = 0.0
+        # 禁用随机探索(保留一点点随机性)
+        node_agent.epsilon = 0.1
+        box_agent.epsilon = 0.1
         
         # 加载性能指标（如果存在）
         metrics_path = os.path.join(BASE_DIR, 'model', 'performance_metrics.json')
@@ -195,9 +200,9 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
                 node_agent.policy_net.eval()
                 box_agent.policy_net.eval()
                 
-                # 禁用随机探索
-                node_agent.epsilon = 0.0
-                box_agent.epsilon = 0.0
+                # 禁用随机探索(保留一点点随机性)
+                node_agent.epsilon = 0.1
+                box_agent.epsilon = 0.1
                 
                 # Alternate execution of node agent and box agent actions
                 step_count = 0

@@ -108,6 +108,12 @@ def train_multi_agent(node_agent, box_agent, episodes, output_path, base_dir, fi
         multi_env.node_env.features = features
         multi_env.box_env.features = features
         
+        # 确保初始化网络
+        if node_agent.policy_net is None:
+            node_agent.initialize_networks(features)
+        if box_agent.policy_net is None:
+            box_agent.initialize_networks(features)
+            
         state = multi_env.reset()
         done = False
         total_reward = 0
@@ -301,7 +307,6 @@ def main():
     with open(os.path.join(output_path, 'config.json'), 'w') as f:
         json.dump(config, f)
     
-    # 初始化节点智能体和矩形框智能体
     node_env = NodeOptimizationEnv
     box_env = BoxOptimizationEnv
     node_agent = NodeAgent(node_env)

@@ -9,16 +9,17 @@ class NodeOptimizationEnv:
         """Initialize the graph optimization environment."""
         self.original_G = G.copy()
         self.G = G.copy()
-        self.pos_nodes = [node for node, data in self.G.nodes(data=True) if data['category'] == 'pos']
-        self.neg_nodes = [node for node, data in self.G.nodes(data=True) if data['category'] == 'neg']
         self.min_nodes = 5
         self.max_nodes = 20
         self.steps = 0
         self.max_steps = max_steps
         self.removed_nodes = set()
         self.boxes = []  # 添加boxes属性
-        self.reset()
-
+        
+        # 初始化其他属性
+        self.pos_nodes = [node for node, data in self.G.nodes(data=True) if data['category'] == 'pos']
+        self.neg_nodes = [node for node, data in self.G.nodes(data=True) if data['category'] == 'neg']
+        
         self.previous_feature_pos_mean = np.mean(list(nx.get_edge_attributes(self.original_G, 'feature_pos').values()))
         self.previous_feature_cross_mean = np.mean(list(nx.get_edge_attributes(self.original_G, 'feature_cross').values()))
         self.previous_physical_pos_mean = np.mean(list(nx.get_edge_attributes(self.original_G, 'physical_pos').values()))
@@ -27,8 +28,10 @@ class NodeOptimizationEnv:
 
         self.previous_pos_num = 0
         self.previous_neg_num = 0
+        self.features = None
         
-        self.features = None  # 初始化特征
+        # 最后调用reset
+        self.reset()
 
     def reset(self):
         """Reset the environment."""
@@ -177,18 +180,17 @@ class NodeOptimizationEnv:
         # 根据操作类型和位置给予不同的奖励
         if operation == "restore_pos":
             if len(outside_pos_indices) > 0:
-                position_reward -= 2 * (len(outside_pos_indices) / len(list(self.G.nodes()))) 
+                position_reward -= (len(outside_pos_indices) / len(list(self.G.nodes()))) 
                 
         if operation == "restore_neg":
             if len(inside_neg_indices) > 0:
-                position_reward -= 2 * (len(inside_neg_indices) / len(list(self.G.nodes()))) 
-        if operation == "remove_pos":
-            if len(outside_pos_indices) == 0:
-                position_reward += 2 * (len(inside_pos_indices) / len(list(self.G.nodes()))) 
-                
-        if operation == "remove_neg":
-            if len(inside_neg_indices) == 0:
-                position_reward += 2 * (len(outside_neg_indices) / len(list(self.G.nodes()))) 
+                position_reward -= (len(inside_neg_indices) / len(list(self.G.nodes()))) 
+        # if operation == "remove_pos":
+        #     if len(outside_pos_indices) == 0:
+        #         position_reward += 2 * (len(inside_pos_indices) / len(list(self.G.nodes()))) 
+        # if operation == "remove_neg":
+        #     if len(inside_neg_indices) == 0:
+        #         position_reward += 2 * (len(outside_neg_indices) / len(list(self.G.nodes()))) 
                 
         # 对每个box内的负样本数量进行检查和惩罚
         # box_counts = count_nodes_per_box(self.G, self.boxes)
@@ -198,7 +200,6 @@ class NodeOptimizationEnv:
         #     if pos_count >= 2 or neg_count >= 2:
         #         position_reward -= 1 * pos_count
 
-        print(f"Operation: {operation}, Position Reward: {position_reward}")
         reward += position_reward
 
         self.previous_pos_num = len(self.pos_nodes)
@@ -209,6 +210,7 @@ class NodeOptimizationEnv:
         self.previous_physical_neg_mean = mean_physical_neg
         self.previous_physical_cross_mean = mean_physical_cross
 
+        print(f"Operation: {operation}, Reward: {reward}")
         return reward
 
     def is_done(self):

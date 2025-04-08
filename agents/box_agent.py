@@ -55,16 +55,25 @@ class BoxAgent:
         self.state_dim = 6  # [box_features, coherence, difference, adjacency, pos_ratio, neg_ratio] 
         self.action_dim = len(self.edge_actions) + len(self.merge_action)
         
-        self.policy_net = DQN(self.state_dim, self.action_dim).to(self.device)
-        self.target_net = DQN(self.state_dim, self.action_dim).to(self.device)
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        
-        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.alpha)
+        # 初始化为None
+        self.policy_net = None
+        self.target_net = None
+        self.optimizer = None
         self.criterion = nn.SmoothL1Loss()
         
         self.memory = deque(maxlen=10000)
         self.best_memory = deque(maxlen=10000)
         self.batch_size = 64
+
+    def initialize_networks(self, features):
+        """根据特征张量初始化网络"""
+        if self.policy_net is not None:
+            return  # 如果已经初始化过则直接返回
+            
+        self.policy_net = DQN(self.state_dim, self.action_dim).to(self.device)
+        self.target_net = DQN(self.state_dim, self.action_dim).to(self.device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=self.alpha)
 
     def update_epsilon(self):
         """更新探索率"""
@@ -95,43 +104,69 @@ class BoxAgent:
                           device=self.device, dtype=torch.float32)
 
     def get_action(self, state):
+        # 确保网络已初始化
+        if self.policy_net is None:
+            features = self.env.features
+            self.initialize_networks(features)
+            
         state_tensor = self._get_state_features(state)
         
         if random.random() < self.epsilon:
-            # 仍然使用原有的启发式选择逻辑
-            operation_type = random.choice(['extreme', 'adjacent'])
-            extreme_boxes = []
-            adjacent_boxes = []
-            
-            # 分类所有box
-            for box_idx in range(len(self.env.boxes)):
-                is_extreme, all_adjacent, free_edges = self.get_box_type(box_idx)
-                if is_extreme:
-                    extreme_boxes.append((box_idx, free_edges))
-                if all_adjacent:
-                    adjacent_boxes.append(box_idx)
-            
-            if operation_type == 'extreme' and extreme_boxes:
-                # 随机选择一个极值box
-                box_idx, free_edges = random.choice(extreme_boxes)
-                # 在可用的方向中随机选择一个
-                available_directions = [d for d, is_free in free_edges.items() if is_free]
-                if available_directions:
-                    direction = random.choice(available_directions)
-                    operation = random.choice([f"shrink_{direction}", f"expand_{direction}"])
-                    return (box_idx, operation, None)
-                    
-            elif operation_type == 'adjacent' and adjacent_boxes:
-                # 随机选择一个四面邻接的box
-                box_idx = random.choice(adjacent_boxes)
-                mergeable = self.env.find_mergeable_boxes(box_idx)
-                if mergeable:
-                    target_idx, _ = mergeable[0]
-                    return (box_idx, "merge", target_idx)
-                    
-            # 如果所选类型无可用动作,随机选择一个box和动作
-            box_idx = random.randint(0, len(self.env.boxes) - 1)
-            return (box_idx, random.choice(self.actions), None)
+            action_type = random.choice(self.actions)
+            if action_type in self.edge_actions:
+                # 根据动作类型选择合适的box
+                if action_type in ["shrink_up", "expand_up"]:
+                    # 选择y坐标最小的box
+                    box_idx = min(range(len(self.env.boxes)), 
+                        key=lambda i: self.env.boxes[i]['min_y'])
+                elif action_type in ["shrink_down", "expand_down"]:
+                    # 选择y坐标最大的box
+                    box_idx = max(range(len(self.env.boxes)), 
+                        key=lambda i: self.env.boxes[i]['max_y'])
+                elif action_type in ["shrink_left", "expand_left"]:
+                    # 选择x坐标最小的box
+                    box_idx = min(range(len(self.env.boxes)), 
+                        key=lambda i: self.env.boxes[i]['min_x'])
+                elif action_type in ["shrink_right", "expand_right"]:
+                    # 选择x坐标最大的box
+                    box_idx = max(range(len(self.env.boxes)), 
+                        key=lambda i: self.env.boxes[i]['max_x'])
+                return (box_idx, action_type, None)
+            else:
+                # merge操作保持不变
+                operation_type = random.choice(['extreme', 'adjacent'])
+                extreme_boxes = []
+                adjacent_boxes = []
+                
+                # 分类所有box
+                for box_idx in range(len(self.env.boxes)):
+                    is_extreme, all_adjacent, free_edges = self.get_box_type(box_idx)
+                    if is_extreme:
+                        extreme_boxes.append((box_idx, free_edges))
+                    if all_adjacent:
+                        adjacent_boxes.append(box_idx)
+                
+                if operation_type == 'extreme' and extreme_boxes:
+                    # 随机选择一个极值box
+                    box_idx, free_edges = random.choice(extreme_boxes)
+                    # 在可用的方向中随机选择一个
+                    available_directions = [d for d, is_free in free_edges.items() if is_free]
+                    if available_directions:
+                        direction = random.choice(available_directions)
+                        operation = random.choice([f"shrink_{direction}", f"expand_{direction}"])
+                        return (box_idx, operation, None)
+                        
+                elif operation_type == 'adjacent' and adjacent_boxes:
+                    # 随机选择一个四面邻接的box
+                    box_idx = random.choice(adjacent_boxes)
+                    mergeable = self.env.find_mergeable_boxes(box_idx)
+                    if mergeable:
+                        target_idx, _ = mergeable[0]
+                        return (box_idx, "merge", target_idx)
+                        
+                # 如果所选类型无可用动作,随机选择一个box和动作
+                box_idx = random.randint(0, len(self.env.boxes) - 1)
+                return (box_idx, random.choice(self.actions), None)
         else:
             with torch.no_grad():
                 q_values = self.policy_net(state_tensor)
@@ -139,16 +174,53 @@ class BoxAgent:
                 
                 if action_idx < len(self.edge_actions):
                     # Edge action
-                    action = (0, self.edge_actions[action_idx], None)
+                    action_name = self.edge_actions[action_idx]
+                    # 获取所有box的类型信息
+                    extreme_boxes = []
+                    for box_idx in range(len(self.env.boxes)):
+                        is_extreme, _, free_edges = self.get_box_type(box_idx)
+                        if is_extreme:
+                            extreme_boxes.append((box_idx, free_edges))
+                    
+                    # 根据动作类型选择合适的box
+                    selected_box_idx = 0
+                    if extreme_boxes:
+                        if action_name in ["shrink_up", "expand_up"]:
+                            # 选择y坐标最大的box
+                            selected_box_idx = max(range(len(self.env.boxes)), 
+                                key=lambda i: self.env.boxes[i]['max_y'])
+                        elif action_name in ["shrink_down", "expand_down"]:
+                            # 选择y坐标最小的box
+                            selected_box_idx = min(range(len(self.env.boxes)), 
+                                key=lambda i: self.env.boxes[i]['min_y'])
+                        elif action_name in ["shrink_left", "expand_left"]:
+                            # 选择x坐标最小的box
+                            selected_box_idx = min(range(len(self.env.boxes)), 
+                                key=lambda i: self.env.boxes[i]['min_x'])
+                        elif action_name in ["shrink_right", "expand_right"]:
+                            # 选择x坐标最大的box
+                            selected_box_idx = max(range(len(self.env.boxes)), 
+                                key=lambda i: self.env.boxes[i]['max_x'])
+                    
+                    action = (selected_box_idx, action_name, None)
                 else:
-                    # Merge action
-                    mergeable = self.env.find_mergeable_boxes(0)
-                    if mergeable:
-                        target_idx, _ = mergeable[0]
-                        action = (0, "merge", target_idx)
-                    else:
-                        action = (0, self.edge_actions[0], None)
-                        
+                    # Merge action - 保持原有的合并逻辑
+                    adjacent_boxes = []
+                    # 分类所有box
+                    for box_idx in range(len(self.env.boxes)):
+                        is_extreme, all_adjacent, free_edges = self.get_box_type(box_idx)
+                        if all_adjacent:
+                            adjacent_boxes.append(box_idx)
+                    print(f"adjacent_boxes: {len(self.env.boxes)}")
+                    if adjacent_boxes:
+                        box_idx = random.choice(adjacent_boxes)
+                        mergeable = self.env.find_mergeable_boxes(box_idx)
+                        if mergeable :
+                            target_idx, _ = mergeable[0]
+                            return (box_idx, "merge", target_idx)
+                # 如果所选类型无可用动作,随机选择一个box和动作
+                box_idx = random.randint(0, len(self.env.boxes) - 1)
+                return (box_idx, random.choice(self.actions), None)    
         return action
 
     def get_box_type(self, box_idx):
@@ -187,7 +259,6 @@ class BoxAgent:
         transitions = random.sample(self.memory, self.batch_size)
         
         state_batch = torch.stack([t[0] for t in transitions])
-        # 修复action_batch的创建
         action_batch = torch.zeros((self.batch_size, len(self.actions)), device=self.device)
         for i, transition in enumerate(transitions):
             action_idx = self.actions.index(transition[1][1])  # 获取动作在actions列表中的索引

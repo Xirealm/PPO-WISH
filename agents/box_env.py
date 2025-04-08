@@ -5,32 +5,33 @@ from utils import *
 
 class BoxOptimizationEnv:
     def __init__(self, G, bbox_initial=None, image_size=560, max_steps=100, step_size=14):
-        """初始化多box优化环境
-        
-        Args:
-            G (nx.Graph): 图结构
-            bbox_initial (list): 初始box列表，每个元素为dict包含min_x,min_y,max_x,max_y
-            image_size (int): 图像大小
-            max_steps (int): 最大步数
-            step_size (int): 移动步长
-        """
+        """Initialize the box optimization environment."""
         self.original_G = G.copy()
         self.G = G.copy()
+        self.steps = 0
+        self.max_steps = max_steps
+        
+        # Box configurations
         self.image_size = image_size
         self.step_size = step_size
-        self.fine_step_size = self.step_size  # 修改移动步长为14
-        self.similarity_threshold = 0.8  # 相似度阈值，用于判断是否合并box
-        self.min_box_size = 56  # 最小box尺寸，防止box过小
-        self.max_steps = max_steps
-        self.bbox_initial = bbox_initial if bbox_initial else []  # 存储初始box配置
-        self.boxes = self.bbox_initial.copy()  # 当前box配置
-        self.steps = 0
-        self.features = None  # 初始化特征
-        self.final_box = None  # 添加最终合并box属性
+        self.fine_step_size = self.step_size
+        self.min_box_size = 56
+        self.similarity_threshold = 0.8
         
-        self.previous_inner_coherence = 0  # 记录上一步小box内部一致性
-        self.previous_outer_difference = 0  # 记录上一步大box区分性
-    
+        # Box tracking
+        self.bbox_initial = bbox_initial if bbox_initial else []
+        self.boxes = self.bbox_initial.copy()
+        self.final_box = None
+        
+        # Previous state tracking
+        self.previous_inner_coherence = 0
+        self.previous_outer_difference = 0
+        
+        # Additional attributes
+        self.features = None
+        
+        self.reset()
+
     def reset(self):
         """重置环境"""
         self.G = self.original_G.copy()
@@ -194,6 +195,8 @@ class BoxOptimizationEnv:
         self.previous_inner_coherence = current_coherence
         self.previous_outer_difference = current_difference
         
+        print(f"Coherence: {current_coherence}, Difference: {current_difference}")
+        
         # 计算总奖励
         # 内部一致性提高(positive change)给予正奖励
         # 外部区分性提高(positive change)给予正奖励
@@ -301,7 +304,7 @@ class BoxOptimizationEnv:
 
     def step(self, action):
         box_idx, operation, params = action
-        if box_idx >= len(self.boxes):
+        if (box_idx >= len(self.boxes)):
             return self.get_state(), 0, True
             
         old_boxes = self.boxes.copy()
@@ -313,31 +316,34 @@ class BoxOptimizationEnv:
             new_box_idx = self.merge_boxes(box_idx, target_idx)
             reward = self.calculate_box_reward(new_box_idx)
         else:
-            free_edges = self.check_box_adjacency(box_idx)
             if operation.startswith(("shrink_", "expand_")):
+                # 根据操作类型确定移动方向
                 direction = operation.split("_")[1]
-                if free_edges[direction]:
-                    amount = self.step_size if operation.startswith("expand") else -self.step_size
-                    # 根据方向调整box大小
-                    if direction == "up":
-                        new_val = max(0, self.boxes[box_idx]['min_y'] + amount)
-                        if new_val < self.boxes[box_idx]['max_y'] - self.min_box_size:
-                            self.boxes[box_idx]['min_y'] = new_val
-                    elif direction == "down":
-                        new_val = min(self.image_size, self.boxes[box_idx]['max_y'] + amount)
-                        if new_val > self.boxes[box_idx]['min_y'] + self.min_box_size:
-                            self.boxes[box_idx]['max_y'] = new_val
-                    elif direction == "left":
-                        new_val = max(0, self.boxes[box_idx]['min_x'] + amount)
-                        if new_val < self.boxes[box_idx]['max_x'] - self.min_box_size:
-                            self.boxes[box_idx]['min_x'] = new_val
-                    elif direction == "right":
-                        new_val = min(self.image_size, self.boxes[box_idx]['max_x'] + amount)
-                        if new_val > self.boxes[box_idx]['min_x'] + self.min_box_size:
-                            self.boxes[box_idx]['max_x'] = new_val
-                    
-                    reward = self.calculate_box_reward(box_idx)
+                is_shrink = operation.startswith("shrink")
+                amount = -self.step_size if is_shrink else self.step_size
+                print(f"Box {box_idx} {operation} by {amount}")
+                
+                # 根据方向调整box大小
+                if direction == "up":
+                    new_val = self.boxes[box_idx]['min_y'] - amount  # 注意这里是减号，向上为负
+                    if 0 <= new_val < self.boxes[box_idx]['max_y'] - self.min_box_size:
+                        self.boxes[box_idx]['min_y'] = new_val
+                elif direction == "down":
+                    new_val = self.boxes[box_idx]['max_y'] + amount
+                    if new_val > self.boxes[box_idx]['min_y'] + self.min_box_size and new_val <= self.image_size:
+                        self.boxes[box_idx]['max_y'] = new_val
+                elif direction == "left":
+                    new_val = self.boxes[box_idx]['min_x'] - amount  # 注意这里是减号，向左为负
+                    if 0 <= new_val < self.boxes[box_idx]['max_x'] - self.min_box_size:
+                        self.boxes[box_idx]['min_x'] = new_val
+                elif direction == "right":
+                    new_val = self.boxes[box_idx]['max_x'] + amount
+                    if new_val > self.boxes[box_idx]['min_x'] + self.min_box_size:
+                        self.boxes[box_idx]['max_x'] = new_val
+                
+                reward = self.calculate_box_reward(box_idx)
         
+        print(f"Operation: {operation}, Reward: {reward}")
         # 如果奖励为负，回滚操作
         # if reward < 0:
         #     self.boxes = old_boxes
@@ -376,4 +382,4 @@ class BoxOptimizationEnv:
             if not is_inside:
                 outside_count += 1
         
-        return outside_count / len(neg_nodes) 
+        return outside_count / len(neg_nodes)
