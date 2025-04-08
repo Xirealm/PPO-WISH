@@ -279,7 +279,7 @@ def main():
     # 提取文件名前缀（前三个下划线分隔的部分）
     file_prefixes = set('_'.join(f.split('_')[:3]) for f in files)
     # 训练参数设置
-    episodes = 100  # 训练回合数
+    episodes = 10  # 训练回合数
     max_steps = 100  # 每个episode的最大步数
     
     # 创建输出目录结构

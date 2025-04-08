@@ -88,8 +88,8 @@ def load_agents():
         box_agent.policy_net.eval()
         
         # 禁用智能体的探索行为
-        node_agent.epsilon = 0.5
-        box_agent.epsilon = 0.5
+        node_agent.epsilon = 0.0
+        box_agent.epsilon = 0.0
         
         # 加载性能指标（如果存在）
         metrics_path = os.path.join(BASE_DIR, 'model', 'performance_metrics.json')
@@ -196,8 +196,8 @@ def process_single_image(node_agent, box_agent, model_dino, model_seg, image_nam
                 box_agent.policy_net.eval()
                 
                 # 禁用随机探索
-                node_agent.epsilon = 0.5
-                box_agent.epsilon = 0.5
+                node_agent.epsilon = 0.0
+                box_agent.epsilon = 0.0
                 
                 # Alternate execution of node agent and box agent actions
                 step_count = 0
